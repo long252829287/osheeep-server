@@ -1,6 +1,7 @@
 package com.osheeep.server.common.error;
 
 import com.osheeep.server.OsheeepServerApplication;
+import com.osheeep.server.TestUserMapperConfig;
 import com.osheeep.server.common.api.ApiResponse;
 import com.osheeep.server.common.api.RequestIdFilter;
 import jakarta.validation.Valid;
@@ -34,7 +35,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("test")
 @SpringBootTest(classes = OsheeepServerApplication.class)
 @AutoConfigureMockMvc
-@Import({GlobalExceptionHandlerTest.TestController.class, GlobalExceptionHandlerTest.TestSecurityConfig.class})
+@Import({
+        GlobalExceptionHandlerTest.TestController.class,
+        GlobalExceptionHandlerTest.TestSecurityConfig.class,
+        TestUserMapperConfig.class
+})
 class GlobalExceptionHandlerTest {
 
     private static final String REQUEST_ID = "request-123";
@@ -53,6 +58,17 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"))
                 .andExpect(jsonPath("$.message").exists())
+                .andExpect(jsonPath("$.requestId").value(REQUEST_ID));
+    }
+
+    @Test
+    void missingRequestBodyReturnsValidationError() throws Exception {
+        mockMvc.perform(post("/test/validation")
+                        .header(RequestIdFilter.REQUEST_ID_HEADER, REQUEST_ID)
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"))
                 .andExpect(jsonPath("$.requestId").value(REQUEST_ID));
     }
 
