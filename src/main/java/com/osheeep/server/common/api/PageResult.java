@@ -3,13 +3,13 @@ package com.osheeep.server.common.api;
 import java.util.List;
 
 public record PageResult<T>(
-        List<T> records,
+        List<T> items,
         long total,
         long page,
-        long size
+        long pageSize
 ) {
 
     public PageResult {
-        records = records == null ? List.of() : List.copyOf(records);
+        items = items == null ? List.of() : List.copyOf(items);
     }
 }

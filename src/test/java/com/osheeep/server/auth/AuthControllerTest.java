@@ -2,7 +2,6 @@ package com.osheeep.server.auth;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -13,6 +12,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.osheeep.server.TestUserMapperConfig;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.common.security.JwtService;
 import com.osheeep.server.user.UserMapper;
@@ -23,8 +23,6 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -34,7 +32,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @ActiveProfiles("test")
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import(AuthControllerTest.MockMapperConfig.class)
+@Import(TestUserMapperConfig.class)
 class AuthControllerTest {
 
     @Autowired
@@ -191,13 +189,5 @@ class AuthControllerTest {
         user.setPasswordHash(passwordHash);
         user.setStatus("ACTIVE");
         return user;
-    }
-
-    @TestConfiguration
-    static class MockMapperConfig {
-        @Bean
-        UserMapper userMapper() {
-            return mock(UserMapper.class);
-        }
     }
 }
