@@ -9,9 +9,14 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,7 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("test")
 @SpringBootTest(classes = OsheeepServerApplication.class)
 @AutoConfigureMockMvc
-@Import(GlobalExceptionHandlerTest.TestController.class)
+@Import({GlobalExceptionHandlerTest.TestController.class, GlobalExceptionHandlerTest.TestSecurityConfig.class})
 class GlobalExceptionHandlerTest {
 
     private static final String REQUEST_ID = "request-123";
@@ -108,5 +113,19 @@ class GlobalExceptionHandlerTest {
     }
 
     record ValidationRequest(@NotBlank String name) {
+    }
+
+    @TestConfiguration
+    static class TestSecurityConfig {
+
+        @Bean
+        @Order(0)
+        SecurityFilterChain testEndpoints(HttpSecurity http) throws Exception {
+            return http
+                    .securityMatcher("/test/**")
+                    .csrf(csrf -> csrf.disable())
+                    .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll())
+                    .build();
+        }
     }
 }
