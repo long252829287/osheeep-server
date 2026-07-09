@@ -1,0 +1,8 @@
+.ace-tool/
+target/
+.idea/
+.vscode/
+.DS_Store
+.env
+.env.local
+*.log
