@@ -33,6 +33,14 @@ Check the app health endpoint in another terminal:
 curl http://localhost:8080/actuator/health
 ```
 
+Open the local API explorer after the application starts:
+
+```text
+http://localhost:8080/swagger-ui.html
+```
+
+The backend runs on the local Mac. The development server only provides MySQL, Redis, and RabbitMQ; it does not expose the local Swagger UI.
+
 ## Connectivity Checks
 
 ```bash
@@ -50,3 +58,4 @@ nc -vz "$OSHEEEP_RABBITMQ_HOST" "$OSHEEEP_RABBITMQ_PORT"
 - RabbitMQ user: `osheeep_dev`
 - RabbitMQ management plugin is enabled on `15672`.
 - Host-level `firewalld` was inactive during setup. If external connectivity fails, check the cloud security group first.
+- `frame-work` proxies `/api` to the locally running backend at `http://localhost:8080`.

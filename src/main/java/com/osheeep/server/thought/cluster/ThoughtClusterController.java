@@ -5,6 +5,7 @@ import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.job.JobWorker;
 import com.osheeep.server.job.dto.ThoughtJobResponse;
 import com.osheeep.server.thought.cluster.dto.ThoughtClusterResponse;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import java.util.List;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/thoughts/clusters")
+@SecurityRequirement(name = "bearerAuth")
 public class ThoughtClusterController {
 
     private final ThoughtClusterService clusterService;
