@@ -9,6 +9,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.osheeep.server.TestUserMapperConfig;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.common.security.JwtService;
+import com.osheeep.server.job.JobMapper;
+import com.osheeep.server.job.JobWorker;
+import com.osheeep.server.job.entity.JobEntity;
 import com.osheeep.server.thought.cluster.ThoughtClusterFragmentMapper;
 import com.osheeep.server.thought.cluster.ThoughtClusterMapper;
 import com.osheeep.server.thought.cluster.entity.ThoughtClusterEntity;
@@ -53,9 +56,12 @@ class ThoughtOutlineControllerTest {
     @Autowired
     private ThoughtOutlineMapper outlineMapper;
 
+    @Autowired
+    private JobMapper jobMapper;
+
     @BeforeEach
     void setUp() {
-        Mockito.reset(clusterMapper, clusterFragmentMapper, fragmentMapper, outlineMapper);
+        Mockito.reset(clusterMapper, clusterFragmentMapper, fragmentMapper, outlineMapper, jobMapper);
     }
 
     @Test
@@ -102,6 +108,11 @@ class ThoughtOutlineControllerTest {
             invocation.getArgument(0, ThoughtOutlineEntity.class).setId(90L);
             return 1;
         });
+        Mockito.when(jobMapper.insert(Mockito.any(JobEntity.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, JobEntity.class).setId(501L);
+            return 1;
+        });
+        Mockito.when(jobMapper.updateById(Mockito.any(JobEntity.class))).thenReturn(1);
 
         String token = jwtService.generateToken(new CurrentUser(42L, "long"));
 
@@ -123,6 +134,11 @@ class ThoughtOutlineControllerTest {
         Mockito.verify(outlineMapper).insert(outlineCaptor.capture());
         assertThat(outlineCaptor.getValue().getClusterId()).isEqualTo(10L);
         assertThat(outlineCaptor.getValue().getContentJson()).contains("\"titleCandidates\"");
+
+        ArgumentCaptor<JobEntity> jobCaptor = ArgumentCaptor.forClass(JobEntity.class);
+        Mockito.verify(jobMapper).updateById(jobCaptor.capture());
+        assertThat(jobCaptor.getValue().getType()).isEqualTo(JobWorker.OUTLINE_GENERATE_QUEUE);
+        assertThat(jobCaptor.getValue().getStatus()).isEqualTo("completed");
     }
 
     @Test

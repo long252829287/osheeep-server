@@ -15,6 +15,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.osheeep.server.TestUserMapperConfig;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.common.security.JwtService;
+import com.osheeep.server.job.JobMapper;
+import com.osheeep.server.job.entity.JobEntity;
 import com.osheeep.server.thought.cluster.entity.ThoughtClusterEntity;
 import com.osheeep.server.thought.cluster.entity.ThoughtClusterFragmentEntity;
 import com.osheeep.server.thought.fragment.ThoughtFragmentMapper;
@@ -61,11 +63,14 @@ class ThoughtClusterControllerTest {
     private ThoughtFragmentMapper fragmentMapper;
 
     @Autowired
+    private JobMapper jobMapper;
+
+    @Autowired
     private ThoughtClusterService clusterService;
 
     @BeforeEach
     void setUp() {
-        reset(clusterMapper, clusterFragmentMapper, fragmentMapper);
+        reset(clusterMapper, clusterFragmentMapper, fragmentMapper, jobMapper);
     }
 
     @Test
@@ -108,6 +113,11 @@ class ThoughtClusterControllerTest {
             return 1;
         });
         when(clusterFragmentMapper.insert(any(ThoughtClusterFragmentEntity.class))).thenReturn(1);
+        when(jobMapper.insert(any(JobEntity.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, JobEntity.class).setId(500L);
+            return 1;
+        });
+        when(jobMapper.updateById(any(JobEntity.class))).thenReturn(1);
 
         String token = jwtService.generateToken(new CurrentUser(42L, "long"));
 
@@ -116,7 +126,8 @@ class ThoughtClusterControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.userId").value("42"))
-                .andExpect(jsonPath("$.data.status").value("completed"));
+                .andExpect(jsonPath("$.data.status").value("completed"))
+                .andExpect(jsonPath("$.data.jobId").value("500"));
 
         ArgumentCaptor<ThoughtClusterEntity> clusterCaptor = ArgumentCaptor.forClass(ThoughtClusterEntity.class);
         verify(clusterMapper, org.mockito.Mockito.times(2)).insert(clusterCaptor.capture());

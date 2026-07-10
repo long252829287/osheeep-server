@@ -2,7 +2,8 @@ package com.osheeep.server.thought.cluster;
 
 import com.osheeep.server.common.api.ApiResponse;
 import com.osheeep.server.common.security.CurrentUser;
-import com.osheeep.server.thought.cluster.dto.RebuildClustersResponse;
+import com.osheeep.server.job.JobWorker;
+import com.osheeep.server.job.dto.ThoughtJobResponse;
 import com.osheeep.server.thought.cluster.dto.ThoughtClusterResponse;
 import java.util.List;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -16,9 +17,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class ThoughtClusterController {
 
     private final ThoughtClusterService clusterService;
+    private final JobWorker jobWorker;
 
-    public ThoughtClusterController(ThoughtClusterService clusterService) {
+    public ThoughtClusterController(ThoughtClusterService clusterService, JobWorker jobWorker) {
         this.clusterService = clusterService;
+        this.jobWorker = jobWorker;
     }
 
     @GetMapping
@@ -27,7 +30,7 @@ public class ThoughtClusterController {
     }
 
     @PostMapping("/rebuild")
-    public ApiResponse<RebuildClustersResponse> rebuild(@AuthenticationPrincipal CurrentUser currentUser) {
-        return ApiResponse.ok(clusterService.rebuild(currentUser.id()));
+    public ApiResponse<ThoughtJobResponse> rebuild(@AuthenticationPrincipal CurrentUser currentUser) {
+        return ApiResponse.ok(jobWorker.runClusterRebuild(currentUser.id()));
     }
 }

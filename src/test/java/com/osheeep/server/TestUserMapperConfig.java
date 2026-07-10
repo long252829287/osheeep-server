@@ -1,5 +1,6 @@
 package com.osheeep.server;
 
+import com.osheeep.server.job.JobMapper;
 import com.osheeep.server.thought.cluster.ThoughtClusterFragmentMapper;
 import com.osheeep.server.thought.cluster.ThoughtClusterMapper;
 import com.osheeep.server.thought.fragment.ThoughtFragmentMapper;
@@ -35,5 +36,10 @@ public class TestUserMapperConfig {
     @Bean
     public ThoughtOutlineMapper thoughtOutlineMapper() {
         return Mockito.mock(ThoughtOutlineMapper.class);
+    }
+
+    @Bean
+    public JobMapper jobMapper() {
+        return Mockito.mock(JobMapper.class);
     }
 }
