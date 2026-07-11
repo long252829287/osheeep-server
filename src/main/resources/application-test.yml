@@ -33,3 +33,5 @@ osheeep:
   wechat:
     app-id: test-app-id
     app-secret: test-app-secret
+  dinner:
+    invite-secret: 0123456789abcdef0123456789abcdef

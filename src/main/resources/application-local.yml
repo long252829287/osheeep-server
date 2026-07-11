@@ -26,3 +26,5 @@ osheeep:
   wechat:
     app-id: ${OSHEEEP_WECHAT_APP_ID}
     app-secret: ${OSHEEEP_WECHAT_APP_SECRET}
+  dinner:
+    invite-secret: ${OSHEEEP_DINNER_INVITE_SECRET:${OSHEEEP_JWT_SECRET}}
