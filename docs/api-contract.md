@@ -16,7 +16,7 @@ All `/api/**` endpoints return this shape:
 }
 ```
 
-For failures, `success` is `false`, `data` is `null`, and `errorCode` is one of `VALIDATION_ERROR`, `UNAUTHORIZED`, `WECHAT_LOGIN_FAILED`, `FORBIDDEN`, `BUSINESS_ERROR`, or `INTERNAL_ERROR`.
+For failures, `success` is `false`, `data` is omitted, and `errorCode` is one of the documented common or business-specific codes. Successful responses with no data also omit `data`.
 
 ## Authentication
 
@@ -63,6 +63,21 @@ Login response data:
 Registration validation: `username` is 3-64 characters and `password` is 8-128 characters.
 
 The WeChat endpoint exchanges the temporary code on the server. It never returns `openid`, `session_key`, or the AppSecret.
+
+## Dinner Household
+
+All household endpoints require a bearer token. Each user can belong to one household and each household can contain at most two users.
+
+| Method | Path | Request body | Response data |
+| --- | --- | --- | --- |
+| GET | `/api/dinner/household` | None | Household summary, or omitted `data` when unbound |
+| POST | `/api/dinner/households` | Optional `name` | Household, invite code, expiry |
+| POST | `/api/dinner/households/invite-code/refresh` | None | Household, replacement invite code, expiry |
+| POST | `/api/dinner/households/join` | `inviteCode` | Household summary |
+
+Household summary fields are `id`, `name`, `timezone`, and `memberCount`. Create and refresh responses add `inviteCode` and ISO-8601 `inviteExpiresAt`. Invite codes expire after 24 hours; only a keyed digest is persisted.
+
+Household business errors are `DINNER_INVITE_INVALID`, `DINNER_INVITE_EXPIRED`, `DINNER_HOUSEHOLD_FULL`, and `DINNER_ALREADY_IN_HOUSEHOLD`.
 
 ## Thought Clusters
 

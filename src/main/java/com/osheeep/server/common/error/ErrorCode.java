@@ -6,6 +6,10 @@ public enum ErrorCode {
     VALIDATION_ERROR(HttpStatus.BAD_REQUEST, "Request validation failed"),
     UNAUTHORIZED(HttpStatus.UNAUTHORIZED, "Authentication is required"),
     WECHAT_LOGIN_FAILED(HttpStatus.UNAUTHORIZED, "WeChat login failed"),
+    DINNER_INVITE_INVALID(HttpStatus.BAD_REQUEST, "Invite code is invalid"),
+    DINNER_INVITE_EXPIRED(HttpStatus.BAD_REQUEST, "Invite code has expired"),
+    DINNER_HOUSEHOLD_FULL(HttpStatus.CONFLICT, "Household already has two members"),
+    DINNER_ALREADY_IN_HOUSEHOLD(HttpStatus.CONFLICT, "User already belongs to a household"),
     FORBIDDEN(HttpStatus.FORBIDDEN, "Access is denied"),
     BUSINESS_ERROR(HttpStatus.CONFLICT, "Business rule violation"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error");
