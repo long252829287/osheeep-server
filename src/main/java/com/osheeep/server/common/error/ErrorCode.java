@@ -5,6 +5,7 @@ import org.springframework.http.HttpStatus;
 public enum ErrorCode {
     VALIDATION_ERROR(HttpStatus.BAD_REQUEST, "Request validation failed"),
     UNAUTHORIZED(HttpStatus.UNAUTHORIZED, "Authentication is required"),
+    WECHAT_LOGIN_FAILED(HttpStatus.UNAUTHORIZED, "WeChat login failed"),
     FORBIDDEN(HttpStatus.FORBIDDEN, "Access is denied"),
     BUSINESS_ERROR(HttpStatus.CONFLICT, "Business rule violation"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error");

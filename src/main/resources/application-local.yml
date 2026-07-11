@@ -23,3 +23,6 @@ osheeep:
     issuer: osheeep
     secret: ${OSHEEEP_JWT_SECRET}
     access-token-ttl-minutes: 120
+  wechat:
+    app-id: ${OSHEEEP_WECHAT_APP_ID}
+    app-secret: ${OSHEEEP_WECHAT_APP_SECRET}

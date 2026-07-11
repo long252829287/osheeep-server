@@ -30,3 +30,6 @@ osheeep:
     issuer: osheeep-test
     secret: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     access-token-ttl-minutes: 120
+  wechat:
+    app-id: test-app-id
+    app-secret: test-app-secret

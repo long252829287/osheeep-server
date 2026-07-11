@@ -111,7 +111,7 @@ git commit -m "feat: add wechat user identity mapping"
 - Consumes: `WechatProperties(appId, appSecret)` 与 Spring `RestClient.Builder`。
 - Produces: `WechatCode2SessionClient.exchange(String code): WechatSession`。
 
-- [ ] **Step 1: 写失败的 API 客户端测试**
+- [x] **Step 1: 写失败的 API 客户端测试**
 
 ```java
 @Test
@@ -128,13 +128,13 @@ void exchangesCodeWithoutExposingSessionKey() {
 
 错误测试返回 `{"errcode":40029,"errmsg":"invalid code"}`，断言抛出 `BusinessException` 且错误码为 `WECHAT_LOGIN_FAILED`。
 
-- [ ] **Step 2: 运行测试确认客户端缺失**
+- [x] **Step 2: 运行测试确认客户端缺失**
 
 Run: `mvn -Dtest=WechatApiClientTest test`
 
 Expected: FAIL，`WechatApiClient` 尚不存在。
 
-- [ ] **Step 3: 实现 RestClient 调用和配置**
+- [x] **Step 3: 实现 RestClient 调用和配置**
 
 ```java
 @ConfigurationProperties(prefix = "osheeep.wechat")
@@ -160,13 +160,13 @@ osheeep:
 
 测试配置只使用 `test-app-id`、`test-app-secret`。
 
-- [ ] **Step 4: 验证客户端测试**
+- [x] **Step 4: 验证客户端测试**
 
 Run: `mvn -Dtest=WechatApiClientTest test`
 
 Expected: PASS，成功解包与微信错误映射均通过。
 
-- [ ] **Step 5: 提交微信客户端**
+- [x] **Step 5: 提交微信客户端**
 
 ```bash
 git add src/main/java/com/osheeep/server/auth/wechat src/test/java/com/osheeep/server/auth/wechat/WechatApiClientTest.java src/main/resources/application-local.yml src/main/resources/application-test.yml src/main/java/com/osheeep/server/common/error/ErrorCode.java docs/superpowers/plans/2026-07-11-wechat-login.md
