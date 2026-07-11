@@ -42,6 +42,14 @@ public class UserService {
         return user;
     }
 
+    public UserEntity createWechatUser(String username) {
+        UserEntity user = new UserEntity();
+        user.setUsername(username);
+        user.setStatus(ACTIVE_STATUS);
+        userMapper.insert(user);
+        return user;
+    }
+
     public UserEntity requireActiveUser(Long id) {
         UserEntity user = userMapper.selectById(id);
         if (!isActive(user)) {

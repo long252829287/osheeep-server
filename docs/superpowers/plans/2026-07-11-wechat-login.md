@@ -33,7 +33,7 @@
 - Produces: `WechatUserIdentityMapper`、`UserService.createWechatUser(String username)`。
 - Database: openid 唯一、每个 user_id 最多一个微信身份；微信用户 email/password_hash 可空。
 
-- [ ] **Step 1: 写失败的身份服务测试**
+- [x] **Step 1: 写失败的身份服务测试**
 
 ```java
 @Test
@@ -55,13 +55,13 @@ void firstLoginCreatesUserAndIdentity() {
 
 第二个测试令 `identityMapper.selectOne` 返回 userId 42，断言复用 `userMapper.selectById(42L)` 且不插入新用户。
 
-- [ ] **Step 2: 运行测试确认缺少微信身份类型**
+- [x] **Step 2: 运行测试确认缺少微信身份类型**
 
 Run: `mvn -Dtest=WechatAuthServiceTest test`
 
 Expected: FAIL，目标类型或 `WechatAuthService` 尚不存在。
 
-- [ ] **Step 3: 创建迁移和身份映射**
+- [x] **Step 3: 创建迁移和身份映射**
 
 ```sql
 ALTER TABLE users
@@ -83,13 +83,13 @@ CREATE TABLE wechat_user_identities (
 
 `WechatUserIdentityEntity` 映射 `id`、`userId`、`openid`、`createdAt`、`updatedAt`；Mapper 继承 `BaseMapper<WechatUserIdentityEntity>`。`createWechatUser` 写入 `username`、`status=ACTIVE`，email/passwordHash 保持 null。
 
-- [ ] **Step 4: 运行身份服务测试**
+- [x] **Step 4: 运行身份服务测试**
 
 Run: `mvn -Dtest=WechatAuthServiceTest test`
 
 Expected: PASS，首次创建和再次复用两条测试通过。
 
-- [ ] **Step 5: 提交身份持久化**
+- [x] **Step 5: 提交身份持久化**
 
 ```bash
 git add src/main/resources/db/migration/V2__add_wechat_identity.sql src/main/java/com/osheeep/server/auth/wechat src/main/java/com/osheeep/server/user/UserService.java src/test/java/com/osheeep/server/TestUserMapperConfig.java src/test/java/com/osheeep/server/auth/wechat/WechatAuthServiceTest.java docs/superpowers/plans/2026-07-11-wechat-login.md

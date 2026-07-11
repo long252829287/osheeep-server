@@ -40,7 +40,7 @@ public class AuthService {
                 passwordEncoder.encode(request.password()),
                 request.displayName()
         );
-        return loginResponse(user);
+        return issueToken(user);
     }
 
     public LoginResponse login(LoginRequest request) {
@@ -48,10 +48,10 @@ public class AuthService {
         if (!userService.isActive(user) || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "Invalid email or password");
         }
-        return loginResponse(user);
+        return issueToken(user);
     }
 
-    private LoginResponse loginResponse(UserEntity user) {
+    public LoginResponse issueToken(UserEntity user) {
         String token = jwtService.generateToken(new CurrentUser(user.getId(), user.getUsername()));
         return new LoginResponse(token, UserProfileResponse.from(user));
     }
