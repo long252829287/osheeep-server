@@ -239,6 +239,13 @@ git add src/main/java src/test/java src/main/resources docs/api-contract.md docs
 git commit -m "feat: add wechat mini program login"
 ```
 
+### Task 4: 真实微信登录联调
+
+- [x] **Step 1: 启动 local profile 并执行 Flyway v2**
+- [x] **Step 2: 在微信开发者工具发起真实登录，确认请求到达后端**
+- [x] **Step 3: 安全记录微信 errcode/异常类型（不记录 code、openid、session_key 或 errmsg）**
+- [x] **Step 4: 兼容微信 `text/plain` JSON 响应并复测登录成功**
+
 ## 阶段验收
 
 - 不带 JWT 调用 `POST /api/auth/wechat` 可成功。
