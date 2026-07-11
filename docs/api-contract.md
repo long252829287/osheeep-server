@@ -16,7 +16,7 @@ All `/api/**` endpoints return this shape:
 }
 ```
 
-For failures, `success` is `false`, `data` is `null`, and `errorCode` is one of `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `BUSINESS_ERROR`, or `INTERNAL_ERROR`.
+For failures, `success` is `false`, `data` is `null`, and `errorCode` is one of `VALIDATION_ERROR`, `UNAUTHORIZED`, `WECHAT_LOGIN_FAILED`, `FORBIDDEN`, `BUSINESS_ERROR`, or `INTERNAL_ERROR`.
 
 ## Authentication
 
@@ -24,6 +24,7 @@ Public endpoints:
 
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `POST /api/auth/wechat`
 - `GET /actuator/health`
 - `GET /swagger-ui.html`
 - `GET /v3/api-docs`
@@ -40,6 +41,7 @@ Authorization: Bearer <accessToken>
 | --- | --- | --- | --- |
 | POST | `/api/auth/register` | `email`, `username`, `password`, optional `displayName` | Login response |
 | POST | `/api/auth/login` | `email`, `password` | Login response |
+| POST | `/api/auth/wechat` | `code` from `wx.login` | Login response |
 | POST | `/api/auth/logout` | None | `null` |
 | GET | `/api/users/me` | None | User profile |
 
@@ -59,6 +61,8 @@ Login response data:
 ```
 
 Registration validation: `username` is 3-64 characters and `password` is 8-128 characters.
+
+The WeChat endpoint exchanges the temporary code on the server. It never returns `openid`, `session_key`, or the AppSecret.
 
 ## Thought Clusters
 

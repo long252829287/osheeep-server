@@ -13,6 +13,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.osheeep.server.TestUserMapperConfig;
+import com.osheeep.server.auth.wechat.WechatCode2SessionClient;
+import com.osheeep.server.auth.wechat.WechatSession;
+import com.osheeep.server.auth.wechat.WechatUserIdentityEntity;
+import com.osheeep.server.auth.wechat.WechatUserIdentityMapper;
+import com.osheeep.server.common.error.BusinessException;
+import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.common.security.JwtService;
 import com.osheeep.server.user.UserMapper;
@@ -50,9 +56,57 @@ class AuthControllerTest {
     @Autowired
     private UserMapper userMapper;
 
+    @Autowired
+    private WechatCode2SessionClient wechatSessionClient;
+
+    @Autowired
+    private WechatUserIdentityMapper wechatIdentityMapper;
+
     @BeforeEach
     void setUp() {
-        reset(userMapper);
+        reset(userMapper, wechatSessionClient, wechatIdentityMapper);
+    }
+
+    @Test
+    void wechatLoginReturnsTokenAndUserWithoutAuthentication() throws Exception {
+        when(wechatSessionClient.exchange("code-1")).thenReturn(new WechatSession("openid-1"));
+        when(wechatIdentityMapper.selectOne(any())).thenReturn(null);
+        when(userMapper.insert(any(UserEntity.class))).thenAnswer(invocation -> {
+            UserEntity user = invocation.getArgument(0);
+            user.setId(101L);
+            return 1;
+        });
+
+        mockMvc.perform(post("/api/auth/wechat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"code-1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.accessToken").isString())
+                .andExpect(jsonPath("$.data.user.id").value(101));
+
+        verify(wechatIdentityMapper).insert(any(WechatUserIdentityEntity.class));
+    }
+
+    @Test
+    void wechatLoginRejectsBlankCode() throws Exception {
+        mockMvc.perform(post("/api/auth/wechat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\" \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+    }
+
+    @Test
+    void wechatLoginMapsWechatFailure() throws Exception {
+        when(wechatSessionClient.exchange("bad-code"))
+                .thenThrow(new BusinessException(ErrorCode.WECHAT_LOGIN_FAILED));
+
+        mockMvc.perform(post("/api/auth/wechat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"bad-code\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("WECHAT_LOGIN_FAILED"));
     }
 
     @Test

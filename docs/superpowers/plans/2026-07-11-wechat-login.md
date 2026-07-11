@@ -188,7 +188,7 @@ git commit -m "feat: add wechat code session client"
 - Consumes: `{ "code": "wx-login-code" }`。
 - Produces: 现有 `ApiResponse<LoginResponse>`，字段仍为 `accessToken` 和 `user`。
 
-- [ ] **Step 1: 写失败的控制器测试**
+- [x] **Step 1: 写失败的控制器测试**
 
 ```java
 @Test
@@ -212,13 +212,13 @@ void wechatLoginReturnsTokenAndUserWithoutAuthentication() throws Exception {
 
 空 code 测试断言 HTTP 400 和 `VALIDATION_ERROR`；微信错误测试断言 HTTP 401 和 `WECHAT_LOGIN_FAILED`。
 
-- [ ] **Step 2: 运行测试确认接口未注册**
+- [x] **Step 2: 运行测试确认接口未注册**
 
 Run: `mvn -Dtest=AuthControllerTest test`
 
 Expected: FAIL，`POST /api/auth/wechat` 未放行或未映射。
 
-- [ ] **Step 3: 实现控制器与 JWT 复用**
+- [x] **Step 3: 实现控制器与 JWT 复用**
 
 ```java
 public record WechatLoginRequest(@NotBlank String code) {}
@@ -226,13 +226,13 @@ public record WechatLoginRequest(@NotBlank String code) {}
 
 `AuthController.wechatLogin` 调用 `WechatAuthService.login(request.code())`；`AuthService.issueToken(UserEntity)` 改为包内可复用方法；SecurityConfig 将 `/api/auth/wechat` 与 register/login 一并 permitAll。
 
-- [ ] **Step 4: 运行完整验证**
+- [x] **Step 4: 运行完整验证**
 
 Run: `mvn test`
 
 Expected: BUILD SUCCESS，全部单元和控制器测试通过。
 
-- [ ] **Step 5: 提交登录接口**
+- [x] **Step 5: 提交登录接口**
 
 ```bash
 git add src/main/java src/test/java src/main/resources docs/api-contract.md docs/superpowers/plans/2026-07-11-wechat-login.md
