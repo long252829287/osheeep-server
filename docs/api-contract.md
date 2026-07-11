@@ -79,6 +79,26 @@ Household summary fields are `id`, `name`, `timezone`, and `memberCount`. Create
 
 Household business errors are `DINNER_INVITE_INVALID`, `DINNER_INVITE_EXPIRED`, `DINNER_HOUSEHOLD_FULL`, and `DINNER_ALREADY_IN_HOUSEHOLD`.
 
+## Dinner Menu And Records
+
+All menu, recipe, and record endpoints require a bearer token and an active household membership. The server derives the household and current user from the token.
+
+| Method | Path | Request body | Response data |
+| --- | --- | --- | --- |
+| GET | `/api/dinner/recipes` | None | Active system recipe array |
+| GET | `/api/dinner/menus/today` | None | Today's merged menu |
+| PUT | `/api/dinner/menus/today/selections` | `recipeIds`, `version` | Updated merged menu |
+| POST | `/api/dinner/menus/today/confirm` | `version`, UUID v4 `idempotencyKey` | Confirmed menu |
+| POST | `/api/dinner/menus/today/complete` | `version`, UUID v4 `idempotencyKey` | `recordId` and completed menu |
+| GET | `/api/dinner/records` | None | Completed record summaries |
+| GET | `/api/dinner/records/{id}` | None | Record detail and dish snapshots |
+
+The menu business day changes at 04:00 in the household timezone. `TodayMenuResponse` contains `id`, `menuDate`, `status`, `version`, `mySelectionCount`, `partnerSelectionCount`, `consensusCount`, `selectedRecipeIds`, merged `dishes`, confirmation/completion metadata, and optional `recordId`. Dish `source` is relative to the current user: `ME`, `PARTNER`, or `BOTH`.
+
+Selection updates replace only the current member's complete selection set. Every write compares `version`; stale writes return HTTP 409 with `DINNER_MENU_VERSION_CONFLICT`. Confirming an empty menu returns `DINNER_MENU_EMPTY`. Updating a completed menu returns `DINNER_MENU_COMPLETED`, and completing a menu that is not confirmed returns `DINNER_MENU_NOT_CONFIRMED`.
+
+Completion is idempotent by both the request key and the unique menu record. Repeated completion returns the existing record and never creates duplicate snapshots.
+
 ## Thought Clusters
 
 | Method | Path | Request body | Response data |

@@ -12,6 +12,7 @@ public enum ErrorCode {
     DINNER_ALREADY_IN_HOUSEHOLD(HttpStatus.CONFLICT, "User already belongs to a household"),
     DINNER_MENU_EMPTY(HttpStatus.BAD_REQUEST, "Dinner menu must contain at least one recipe"),
     DINNER_MENU_VERSION_CONFLICT(HttpStatus.CONFLICT, "Dinner menu was updated by another member"),
+    DINNER_MENU_NOT_CONFIRMED(HttpStatus.CONFLICT, "Dinner menu must be confirmed before completion"),
     DINNER_MENU_COMPLETED(HttpStatus.CONFLICT, "Dinner menu is already completed"),
     DINNER_RECIPE_INVALID(HttpStatus.BAD_REQUEST, "Dinner recipe is invalid"),
     FORBIDDEN(HttpStatus.FORBIDDEN, "Access is denied"),
