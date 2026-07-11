@@ -1,18 +1,24 @@
 package com.osheeep.server.dinner.menu;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.osheeep.server.common.error.BusinessException;
+import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
 import com.osheeep.server.dinner.menu.dto.MenuDishResponse;
+import com.osheeep.server.dinner.menu.entity.DinnerMenuActionEntity;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuEntity;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuSelectionEntity;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
+import com.osheeep.server.dinner.menu.mapper.DinnerMenuActionMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuSelectionMapper;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
@@ -34,6 +40,7 @@ class DinnerMenuServiceTest {
     @Mock private DinnerHouseholdMemberMapper memberMapper;
     @Mock private DinnerMenuMapper menuMapper;
     @Mock private DinnerMenuSelectionMapper selectionMapper;
+    @Mock private DinnerMenuActionMapper actionMapper;
     @Mock private DinnerRecipeMapper recipeMapper;
 
     private DinnerMenuService service;
@@ -46,6 +53,7 @@ class DinnerMenuServiceTest {
                 memberMapper,
                 menuMapper,
                 selectionMapper,
+                actionMapper,
                 recipeMapper,
                 new BusinessDateResolver(),
                 clock);
@@ -95,6 +103,102 @@ class DinnerMenuServiceTest {
         verify(menuMapper).insert(any(DinnerMenuEntity.class));
     }
 
+    @Test
+    void confirmedMenuReturnsToDraftWhenSelectionsChange() {
+        DinnerMenuEntity menu = menu(31L);
+        menu.setStatus("CONFIRMED");
+        menu.setConfirmedBy(7L);
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
+                .thenReturn(menu);
+        when(selectionMapper.selectList(any()))
+                .thenReturn(List.of(selection(31L, 7L, 1L)))
+                .thenReturn(List.of(selection(31L, 7L, 1L), selection(31L, 7L, 2L)));
+        when(recipeMapper.selectByIds(any())).thenReturn(List.of(
+                activeRecipe(1L, "小炒黄牛肉"), activeRecipe(2L, "番茄炒蛋")));
+
+        var result = service.updateSelections(7L, List.of(1L, 2L), 4L);
+
+        assertThat(result.status()).isEqualTo("DRAFT");
+        assertThat(result.version()).isEqualTo(5L);
+        assertThat(menu.getConfirmedBy()).isNull();
+        verify(selectionMapper).delete(any());
+    }
+
+    @Test
+    void staleVersionDoesNotReplaceSelections() {
+        DinnerMenuEntity menu = menu(31L);
+        menu.setVersion(6L);
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
+                .thenReturn(menu);
+
+        assertThatThrownBy(() -> service.updateSelections(7L, List.of(1L), 5L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.DINNER_MENU_VERSION_CONFLICT));
+        verify(selectionMapper, never()).delete(any());
+    }
+
+    @Test
+    void confirmAdvancesNonEmptyDraftOnce() {
+        DinnerMenuEntity menu = menu(31L);
+        menu.setVersion(5L);
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
+                .thenReturn(menu);
+        when(actionMapper.selectOne(any())).thenReturn(null);
+        when(selectionMapper.selectList(any())).thenReturn(List.of(selection(31L, 7L, 1L)));
+        when(recipeMapper.selectByIds(any())).thenReturn(List.of(activeRecipe(1L, "番茄炒蛋")));
+
+        var result = service.confirm(7L, 5L, "00000000-0000-4000-8000-000000000001");
+
+        assertThat(result.status()).isEqualTo("CONFIRMED");
+        assertThat(result.version()).isEqualTo(6L);
+        assertThat(result.confirmedBy()).isEqualTo(7L);
+        verify(actionMapper).insert(any(DinnerMenuActionEntity.class));
+    }
+
+    @Test
+    void confirmRejectsEmptyMenu() {
+        DinnerMenuEntity menu = menu(31L);
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
+                .thenReturn(menu);
+        when(actionMapper.selectOne(any())).thenReturn(null);
+        when(selectionMapper.selectList(any())).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.confirm(
+                7L, 4L, "00000000-0000-4000-8000-000000000002"))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.DINNER_MENU_EMPTY));
+    }
+
+    @Test
+    void repeatedConfirmKeyReturnsCurrentMenuWithoutMutation() {
+        DinnerMenuEntity menu = menu(31L);
+        menu.setStatus("CONFIRMED");
+        menu.setVersion(6L);
+        DinnerMenuActionEntity action = new DinnerMenuActionEntity();
+        action.setIdempotencyKey("00000000-0000-4000-8000-000000000003");
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
+                .thenReturn(menu);
+        when(actionMapper.selectOne(any())).thenReturn(action);
+        when(selectionMapper.selectList(any())).thenReturn(List.of(selection(31L, 7L, 1L)));
+        when(recipeMapper.selectByIds(any())).thenReturn(List.of(activeRecipe(1L, "番茄炒蛋")));
+
+        var result = service.confirm(7L, 5L, action.getIdempotencyKey());
+
+        assertThat(result.version()).isEqualTo(6L);
+        verify(menuMapper, never()).updateById(any(DinnerMenuEntity.class));
+        verify(actionMapper, never()).insert(any(DinnerMenuActionEntity.class));
+    }
+
     private DinnerHouseholdMemberEntity member(Long householdId, Long userId) {
         DinnerHouseholdMemberEntity member = new DinnerHouseholdMemberEntity();
         member.setHouseholdId(householdId);
@@ -135,6 +239,13 @@ class DinnerMenuServiceTest {
         recipe.setCategory("家常菜");
         recipe.setFlavor("鲜香");
         recipe.setEstimatedMinutes(10);
+        return recipe;
+    }
+
+    private DinnerRecipeEntity activeRecipe(Long id, String name) {
+        DinnerRecipeEntity recipe = recipe(id, name);
+        recipe.setScope("SYSTEM");
+        recipe.setStatus("ACTIVE");
         return recipe;
     }
 }

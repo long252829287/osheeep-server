@@ -4,6 +4,12 @@ import com.osheeep.server.job.JobMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerInviteCodeMapper;
+import com.osheeep.server.dinner.menu.mapper.DinnerMenuActionMapper;
+import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
+import com.osheeep.server.dinner.menu.mapper.DinnerMenuSelectionMapper;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
+import com.osheeep.server.dinner.record.mapper.DinnerCookingRecordMapper;
+import com.osheeep.server.dinner.record.mapper.DinnerRecordDishSnapshotMapper;
 import com.osheeep.server.auth.wechat.WechatCode2SessionClient;
 import com.osheeep.server.auth.wechat.WechatUserIdentityMapper;
 import com.osheeep.server.thought.cluster.ThoughtClusterFragmentMapper;
@@ -62,6 +68,36 @@ public class TestUserMapperConfig {
     @Bean
     public DinnerInviteCodeMapper dinnerInviteCodeMapper() {
         return Mockito.mock(DinnerInviteCodeMapper.class);
+    }
+
+    @Bean
+    public DinnerMenuMapper dinnerMenuMapper() {
+        return Mockito.mock(DinnerMenuMapper.class);
+    }
+
+    @Bean
+    public DinnerMenuSelectionMapper dinnerMenuSelectionMapper() {
+        return Mockito.mock(DinnerMenuSelectionMapper.class);
+    }
+
+    @Bean
+    public DinnerMenuActionMapper dinnerMenuActionMapper() {
+        return Mockito.mock(DinnerMenuActionMapper.class);
+    }
+
+    @Bean
+    public DinnerRecipeMapper dinnerRecipeMapper() {
+        return Mockito.mock(DinnerRecipeMapper.class);
+    }
+
+    @Bean
+    public DinnerCookingRecordMapper dinnerCookingRecordMapper() {
+        return Mockito.mock(DinnerCookingRecordMapper.class);
+    }
+
+    @Bean
+    public DinnerRecordDishSnapshotMapper dinnerRecordDishSnapshotMapper() {
+        return Mockito.mock(DinnerRecordDishSnapshotMapper.class);
     }
 
     @Bean
