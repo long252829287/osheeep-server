@@ -30,6 +30,8 @@ class AccountDeletionTransactionTest {
 
     private static final Clock CLOCK =
             Clock.fixed(Instant.parse("2026-07-13T12:00:00Z"), ZoneOffset.UTC);
+    private static final LocalDateTime DELETED_AT =
+            LocalDateTime.parse("2026-07-13T12:00:00");
 
     @Mock private UserMapper userMapper;
     @Mock private UserService userService;
@@ -59,7 +61,7 @@ class AccountDeletionTransactionTest {
 
         verify(dinnerCleanup, never()).removeUser(anyLong(), any());
         verify(identityMapper, never()).deleteById(anyLong());
-        verify(userMapper, never()).updateById(any(UserEntity.class));
+        verify(userMapper, never()).anonymizeActiveUser(anyLong(), any(), any());
     }
 
     @Test
@@ -73,19 +75,49 @@ class AccountDeletionTransactionTest {
         when(userMapper.selectByIdForUpdate(7L)).thenReturn(user);
         when(userService.isActive(user)).thenReturn(true);
         when(identityMapper.selectOne(any())).thenReturn(identity);
+        when(identityMapper.deleteById(71L)).thenReturn(1);
+        when(userMapper.anonymizeActiveUser(7L, "deleted_user_7", DELETED_AT)).thenReturn(1);
 
         transaction.deleteVerified(7L, "openid-7");
 
         verify(identityMapper).deleteById(71L);
-        verify(dinnerCleanup).removeUser(7L, LocalDateTime.parse("2026-07-13T12:00:00"));
-        assertThat(user.getUsername()).isEqualTo("deleted_user_7");
-        assertThat(user.getEmail()).isNull();
-        assertThat(user.getPasswordHash()).isNull();
-        assertThat(user.getDisplayName()).isNull();
-        assertThat(user.getAvatarUrl()).isNull();
-        assertThat(user.getStatus()).isEqualTo("DELETED");
-        assertThat(user.getDeletedAt()).isEqualTo(LocalDateTime.parse("2026-07-13T12:00:00"));
-        verify(userMapper).updateById(user);
+        verify(dinnerCleanup).removeUser(7L, DELETED_AT);
+        verify(userMapper).anonymizeActiveUser(7L, "deleted_user_7", DELETED_AT);
+        verify(userMapper, never()).updateById(any(UserEntity.class));
+    }
+
+    @Test
+    void identityDeletionAffectingNoRowsFailsBeforeCleanup() {
+        UserEntity user = activeUser(7L);
+        WechatUserIdentityEntity identity = identity(71L, 7L, "openid-7");
+        when(userMapper.selectByIdForUpdate(7L)).thenReturn(user);
+        when(userService.isActive(user)).thenReturn(true);
+        when(identityMapper.selectOne(any())).thenReturn(identity);
+        when(identityMapper.deleteById(71L)).thenReturn(0);
+
+        assertThatThrownBy(() -> transaction.deleteVerified(7L, "openid-7"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Expected exactly one WeChat identity row to be deleted");
+
+        verifyNoInteractions(dinnerCleanup);
+        verify(userMapper, never()).anonymizeActiveUser(anyLong(), any(), any());
+    }
+
+    @Test
+    void userAnonymizationAffectingNoRowsFailsAfterCleanup() {
+        UserEntity user = activeUser(7L);
+        WechatUserIdentityEntity identity = identity(71L, 7L, "openid-7");
+        when(userMapper.selectByIdForUpdate(7L)).thenReturn(user);
+        when(userService.isActive(user)).thenReturn(true);
+        when(identityMapper.selectOne(any())).thenReturn(identity);
+        when(identityMapper.deleteById(71L)).thenReturn(1);
+        when(userMapper.anonymizeActiveUser(7L, "deleted_user_7", DELETED_AT)).thenReturn(0);
+
+        assertThatThrownBy(() -> transaction.deleteVerified(7L, "openid-7"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Expected exactly one active user row to be anonymized");
+
+        verify(dinnerCleanup).removeUser(7L, DELETED_AT);
     }
 
     @Test
@@ -100,7 +132,7 @@ class AccountDeletionTransactionTest {
                 .isInstanceOfSatisfying(BusinessException.class, error ->
                         assertThat(error.errorCode()).isEqualTo(ErrorCode.UNAUTHORIZED));
         verifyNoInteractions(identityMapper, dinnerCleanup);
-        verify(userMapper, never()).updateById(any(UserEntity.class));
+        verify(userMapper, never()).anonymizeActiveUser(anyLong(), any(), any());
     }
 
     private UserEntity activeUser(Long id) {

@@ -64,22 +64,18 @@ public class AccountDeletionTransaction {
 
         LocalDateTime deletedAt =
                 LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
-        identityMapper.deleteById(identity.getId());
+        int deletedIdentityRows = identityMapper.deleteById(identity.getId());
+        if (deletedIdentityRows != 1) {
+            throw new IllegalStateException(
+                    "Expected exactly one WeChat identity row to be deleted");
+        }
         dinnerCleanup.removeUser(userId, deletedAt);
-        user.setUsername("deleted_user_" + userId);
-        user.setEmail(null);
-        user.setPasswordHash(null);
-        user.setDisplayName(null);
-        user.setAvatarUrl(null);
-        user.setStatus("DELETED");
-        user.setDeletedAt(deletedAt);
-        userMapper.updateById(user);
-        userMapper.update(null,
-                Wrappers.<UserEntity>update()
-                        .eq("id", userId)
-                        .set("email", null)
-                        .set("password_hash", null)
-                        .set("display_name", null)
-                        .set("avatar_url", null));
+        String anonymizedUsername = "deleted_user_" + userId;
+        int anonymizedUserRows = userMapper.anonymizeActiveUser(
+                userId, anonymizedUsername, deletedAt);
+        if (anonymizedUserRows != 1) {
+            throw new IllegalStateException(
+                    "Expected exactly one active user row to be anonymized");
+        }
     }
 }
