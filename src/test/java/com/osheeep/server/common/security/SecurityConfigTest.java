@@ -4,6 +4,10 @@ import com.osheeep.server.OsheeepServerApplication;
 import com.osheeep.server.TestUserMapperConfig;
 import com.osheeep.server.common.api.ApiResponse;
 import com.osheeep.server.common.api.RequestIdFilter;
+import com.osheeep.server.user.UserMapper;
+import com.osheeep.server.user.entity.UserEntity;
+import java.time.LocalDateTime;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -18,6 +22,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -38,6 +44,14 @@ class SecurityConfigTest {
 
     @Autowired
     private JwtService jwtService;
+
+    @Autowired
+    private UserMapper userMapper;
+
+    @BeforeEach
+    void setUp() {
+        reset(userMapper);
+    }
 
     @Test
     void authEndpointsArePublic() throws Exception {
@@ -88,6 +102,22 @@ class SecurityConfigTest {
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data").value("42:long"))
                 .andExpect(jsonPath("$.requestId").value(REQUEST_ID));
+    }
+
+    @Test
+    void protectedApiRejectsTokenWhenUserWasDeleted() throws Exception {
+        UserEntity deleted = new UserEntity();
+        deleted.setId(42L);
+        deleted.setUsername("deleted_user_42");
+        deleted.setStatus("DELETED");
+        deleted.setDeletedAt(LocalDateTime.parse("2026-07-13T12:00:00"));
+        when(userMapper.selectById(42L)).thenReturn(deleted);
+        String token = jwtService.generateToken(new CurrentUser(42L, "long"));
+
+        mockMvc.perform(get("/api/protected")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
     }
 
     @Test

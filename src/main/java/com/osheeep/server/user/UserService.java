@@ -58,6 +58,10 @@ public class UserService {
         return user;
     }
 
+    public boolean isActiveUserId(Long id) {
+        return isActive(userMapper.selectById(id));
+    }
+
     public boolean isActive(UserEntity user) {
         return user != null && user.getDeletedAt() == null && ACTIVE_STATUS.equals(user.getStatus());
     }

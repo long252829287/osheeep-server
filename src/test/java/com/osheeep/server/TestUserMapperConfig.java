@@ -17,6 +17,8 @@ import com.osheeep.server.thought.cluster.ThoughtClusterMapper;
 import com.osheeep.server.thought.fragment.ThoughtFragmentMapper;
 import com.osheeep.server.thought.outline.ThoughtOutlineMapper;
 import com.osheeep.server.user.UserMapper;
+import com.osheeep.server.user.entity.UserEntity;
+import org.mockito.Answers;
 import org.mockito.Mockito;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -27,7 +29,17 @@ public class TestUserMapperConfig {
 
     @Bean
     public UserMapper userMapper() {
-        return Mockito.mock(UserMapper.class);
+        return Mockito.mock(UserMapper.class, invocation -> {
+            if ("selectById".equals(invocation.getMethod().getName())) {
+                Object id = invocation.getArgument(0);
+                UserEntity user = new UserEntity();
+                user.setId(Long.valueOf(id.toString()));
+                user.setUsername("test_user_" + id);
+                user.setStatus("ACTIVE");
+                return user;
+            }
+            return Answers.RETURNS_DEFAULTS.answer(invocation);
+        });
     }
 
     @Bean
