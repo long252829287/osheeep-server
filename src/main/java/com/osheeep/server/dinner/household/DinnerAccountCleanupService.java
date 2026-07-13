@@ -65,7 +65,7 @@ public class DinnerAccountCleanupService {
         Long householdId = membership.getHouseholdId();
         DinnerHouseholdEntity household = householdMapper.selectByIdForUpdate(householdId);
         if (household == null) {
-            memberMapper.deleteById(membership.getId());
+            deleteMembership(householdId, userId);
             return;
         }
         long memberCount = memberMapper.selectCount(
@@ -74,13 +74,20 @@ public class DinnerAccountCleanupService {
         if (memberCount > 1) {
             inviteMapper.update(null,
                     Wrappers.<DinnerInviteCodeEntity>lambdaUpdate()
+                            .eq(DinnerInviteCodeEntity::getHouseholdId, householdId)
                             .eq(DinnerInviteCodeEntity::getCreatedBy, userId)
                             .isNull(DinnerInviteCodeEntity::getRevokedAt)
                             .set(DinnerInviteCodeEntity::getRevokedAt, deletedAt));
-            memberMapper.deleteById(membership.getId());
+            deleteMembership(householdId, userId);
             return;
         }
         deleteHousehold(householdId);
+    }
+
+    private void deleteMembership(Long householdId, Long userId) {
+        memberMapper.delete(Wrappers.<DinnerHouseholdMemberEntity>lambdaQuery()
+                .eq(DinnerHouseholdMemberEntity::getHouseholdId, householdId)
+                .eq(DinnerHouseholdMemberEntity::getUserId, userId));
     }
 
     private void deleteHousehold(Long householdId) {
