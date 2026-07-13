@@ -1,0 +1,47 @@
+server:
+  forward-headers-strategy: framework
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  datasource:
+    url: jdbc:mysql://${OSHEEEP_DB_HOST}:${OSHEEEP_DB_PORT}/${OSHEEEP_DB_NAME}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
+    username: ${OSHEEEP_DB_USERNAME}
+    password: ${OSHEEEP_DB_PASSWORD}
+  data:
+    redis:
+      host: ${OSHEEEP_REDIS_HOST}
+      port: ${OSHEEEP_REDIS_PORT}
+      password: ${OSHEEEP_REDIS_PASSWORD}
+  rabbitmq:
+    host: ${OSHEEEP_RABBITMQ_HOST}
+    port: ${OSHEEEP_RABBITMQ_PORT}
+    username: ${OSHEEEP_RABBITMQ_USERNAME}
+    password: ${OSHEEEP_RABBITMQ_PASSWORD}
+    virtual-host: ${OSHEEEP_RABBITMQ_VHOST}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+osheeep:
+  jwt:
+    issuer: osheeep
+    secret: ${OSHEEEP_JWT_SECRET}
+    access-token-ttl-minutes: 120
+  wechat:
+    app-id: ${OSHEEEP_WECHAT_APP_ID}
+    app-secret: ${OSHEEEP_WECHAT_APP_SECRET}
+  dinner:
+    invite-secret: ${OSHEEEP_DINNER_INVITE_SECRET:${OSHEEEP_JWT_SECRET}}
+
+logging:
+  file:
+    name: /opt/osheeep-server/logs/application.log
+  logback:
+    rollingpolicy:
+      file-name-pattern: /opt/osheeep-server/logs/application.%d{yyyy-MM-dd}.%i.log.gz
+      max-file-size: 20MB
+      max-history: 14
+      total-size-cap: 300MB
+      clean-history-on-start: true

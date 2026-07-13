@@ -1,0 +1,22 @@
+[Unit]
+Description=Osheeep Spring Boot Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=osheeep
+Group=osheeep
+WorkingDirectory=/opt/osheeep-server
+EnvironmentFile=/opt/osheeep-server/osheeep-server.env
+ExecStart=/opt/java/jre-21/bin/java -Xms64m -Xmx256m -XX:MaxMetaspaceSize=128m -jar /opt/osheeep-server/osheeep-server.jar
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
