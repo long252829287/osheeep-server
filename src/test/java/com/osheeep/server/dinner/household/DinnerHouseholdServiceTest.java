@@ -3,6 +3,7 @@ package com.osheeep.server.dinner.household;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
@@ -22,6 +23,7 @@ import java.time.ZoneOffset;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
@@ -81,8 +83,9 @@ class DinnerHouseholdServiceTest {
         DinnerInviteCodeEntity invite = invite(11L, Instant.parse("2026-07-12T06:00:00Z"));
         DinnerHouseholdEntity household = household(11L);
         when(memberMapper.selectOne(any())).thenReturn(null);
-        when(inviteMapper.selectOne(any())).thenReturn(invite);
+        when(inviteMapper.selectByCodeHash(any())).thenReturn(invite);
         when(householdMapper.selectByIdForUpdate(11L)).thenReturn(household);
+        when(inviteMapper.selectByIdAndHouseholdIdForUpdate(21L, 11L)).thenReturn(invite);
         when(memberMapper.selectCount(any())).thenReturn(1L);
 
         var result = service.join(8L, "dinner 5268");
@@ -93,11 +96,33 @@ class DinnerHouseholdServiceTest {
     }
 
     @Test
+    void joinRejectsInviteRevokedWhileWaitingForHouseholdLock() {
+        DinnerInviteCodeEntity located = invite(11L, Instant.parse("2026-07-12T06:00:00Z"));
+        DinnerInviteCodeEntity revoked = invite(11L, Instant.parse("2026-07-12T06:00:00Z"));
+        revoked.setRevokedAt(Instant.parse("2026-07-11T05:59:00Z")
+                .atOffset(ZoneOffset.UTC).toLocalDateTime());
+        when(memberMapper.selectOne(any())).thenReturn(null);
+        when(inviteMapper.selectByCodeHash(any())).thenReturn(located);
+        when(householdMapper.selectByIdForUpdate(11L)).thenReturn(household(11L));
+        when(inviteMapper.selectByIdAndHouseholdIdForUpdate(21L, 11L)).thenReturn(revoked);
+
+        assertThatThrownBy(() -> service.join(8L, "DINNER 5268"))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.DINNER_INVITE_INVALID));
+        verify(memberMapper, never()).insert(any(DinnerHouseholdMemberEntity.class));
+        InOrder order = inOrder(householdMapper, inviteMapper, memberMapper);
+        order.verify(inviteMapper).selectByCodeHash(any());
+        order.verify(householdMapper).selectByIdForUpdate(11L);
+        order.verify(inviteMapper).selectByIdAndHouseholdIdForUpdate(21L, 11L);
+    }
+
+    @Test
     void joinRejectsFullHouseholdInsideLock() {
         DinnerInviteCodeEntity invite = invite(11L, Instant.parse("2026-07-12T06:00:00Z"));
         when(memberMapper.selectOne(any())).thenReturn(null);
-        when(inviteMapper.selectOne(any())).thenReturn(invite);
+        when(inviteMapper.selectByCodeHash(any())).thenReturn(invite);
         when(householdMapper.selectByIdForUpdate(11L)).thenReturn(household(11L));
+        when(inviteMapper.selectByIdAndHouseholdIdForUpdate(21L, 11L)).thenReturn(invite);
         when(memberMapper.selectCount(any())).thenReturn(2L);
 
         assertThatThrownBy(() -> service.join(8L, "DINNER5268"))
@@ -109,8 +134,9 @@ class DinnerHouseholdServiceTest {
     void joinMapsConcurrentMembershipConflict() {
         DinnerInviteCodeEntity invite = invite(11L, Instant.parse("2026-07-12T06:00:00Z"));
         when(memberMapper.selectOne(any())).thenReturn(null);
-        when(inviteMapper.selectOne(any())).thenReturn(invite);
+        when(inviteMapper.selectByCodeHash(any())).thenReturn(invite);
         when(householdMapper.selectByIdForUpdate(11L)).thenReturn(household(11L));
+        when(inviteMapper.selectByIdAndHouseholdIdForUpdate(21L, 11L)).thenReturn(invite);
         when(memberMapper.selectCount(any())).thenReturn(1L);
         when(memberMapper.insert(any(DinnerHouseholdMemberEntity.class)))
                 .thenThrow(new DuplicateKeyException("membership conflict"));
@@ -134,7 +160,7 @@ class DinnerHouseholdServiceTest {
     @Test
     void joinRejectsUnknownInvite() {
         when(memberMapper.selectOne(any())).thenReturn(null);
-        when(inviteMapper.selectOne(any())).thenReturn(null);
+        when(inviteMapper.selectByCodeHash(any())).thenReturn(null);
 
         assertThatThrownBy(() -> service.join(8L, "DINNER 0000"))
                 .isInstanceOfSatisfying(BusinessException.class, error ->
@@ -145,7 +171,7 @@ class DinnerHouseholdServiceTest {
     @Test
     void joinRejectsExpiredInvite() {
         when(memberMapper.selectOne(any())).thenReturn(null);
-        when(inviteMapper.selectOne(any())).thenReturn(
+        when(inviteMapper.selectByCodeHash(any())).thenReturn(
                 invite(11L, Instant.parse("2026-07-11T06:00:00Z")));
 
         assertThatThrownBy(() -> service.join(8L, "DINNER 5268"))
@@ -158,15 +184,21 @@ class DinnerHouseholdServiceTest {
     void refreshRevokesActiveInviteAndReturnsReplacement() {
         DinnerInviteCodeEntity activeInvite = invite(11L, Instant.parse("2026-07-12T06:00:00Z"));
         activeInvite.setId(21L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(inviteMapper.selectOne(any())).thenReturn(activeInvite);
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(memberMapper.selectByUserIdForUpdate(7L)).thenReturn(member(11L, 7L));
+        when(householdMapper.selectByIdForUpdate(11L)).thenReturn(household(11L));
+        when(inviteMapper.selectActiveByHouseholdIdForUpdate(any(), any())).thenReturn(activeInvite);
 
         var result = service.refreshInvite(7L);
 
         assertThat(result.inviteCode()).isEqualTo("DINNER 5268");
         assertThat(activeInvite.getRevokedAt()).isNotNull();
         verify(inviteMapper).updateById(activeInvite);
+        InOrder order = inOrder(memberMapper, householdMapper, inviteMapper);
+        order.verify(memberMapper).selectByUserIdForUpdate(7L);
+        order.verify(householdMapper).selectByIdForUpdate(11L);
+        order.verify(inviteMapper).selectActiveByHouseholdIdForUpdate(any(), any());
+        order.verify(inviteMapper).updateById(activeInvite);
+        order.verify(inviteMapper).insert(any(DinnerInviteCodeEntity.class));
     }
 
     private DinnerHouseholdMemberEntity member(Long householdId, Long userId) {
@@ -187,7 +219,9 @@ class DinnerHouseholdServiceTest {
 
     private DinnerInviteCodeEntity invite(Long householdId, Instant expiresAt) {
         DinnerInviteCodeEntity invite = new DinnerInviteCodeEntity();
+        invite.setId(21L);
         invite.setHouseholdId(householdId);
+        invite.setCodeHash(inviteCodeHasher.hash("DINNER5268"));
         invite.setExpiresAt(expiresAt.atOffset(ZoneOffset.UTC).toLocalDateTime());
         return invite;
     }

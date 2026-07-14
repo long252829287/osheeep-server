@@ -96,6 +96,15 @@ class DinnerAccountCleanupServiceTest {
 
         service.removeUser(7L, deletedAt);
 
+        InOrder lockOrder = inOrder(memberMapper, householdMapper);
+        lockOrder.verify(memberMapper).selectByUserIdForUpdate(7L);
+        lockOrder.verify(householdMapper).selectByIdForUpdate(11L);
+
+        ArgumentCaptor<Wrapper<DinnerHouseholdMemberEntity>> memberCount = wrapperCaptor();
+        verify(memberMapper).selectCount(memberCount.capture());
+        assertEqualsCondition(memberCount.getValue(), "household_id", 11L);
+        assertOnlyParameterValues(memberCount.getValue(), 11L);
+
         ArgumentCaptor<Wrapper<DinnerInviteCodeEntity>> inviteUpdate = wrapperCaptor();
         verify(inviteMapper).update(isNull(), inviteUpdate.capture());
         assertEqualsCondition(inviteUpdate.getValue(), "household_id", 11L);
@@ -129,6 +138,11 @@ class DinnerAccountCleanupServiceTest {
         when(recordMapper.selectList(any())).thenReturn(List.of(record));
 
         service.removeUser(7L, LocalDateTime.parse("2026-07-13T12:00:00"));
+
+        ArgumentCaptor<Wrapper<DinnerHouseholdMemberEntity>> memberCount = wrapperCaptor();
+        verify(memberMapper).selectCount(memberCount.capture());
+        assertEqualsCondition(memberCount.getValue(), "household_id", 11L);
+        assertOnlyParameterValues(memberCount.getValue(), 11L);
 
         ArgumentCaptor<Wrapper<DinnerMenuEntity>> menuSelect = wrapperCaptor();
         verify(menuMapper).selectList(menuSelect.capture());

@@ -87,21 +87,21 @@ public class DinnerHouseholdService {
 
     @Transactional
     public HouseholdCreatedResponse refreshInvite(Long userId) {
-        DinnerHouseholdMemberEntity membership = findMembership(userId);
+        DinnerHouseholdMemberEntity membership = memberMapper.selectByUserIdForUpdate(userId);
         if (membership == null) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
+        DinnerHouseholdEntity household = householdMapper.selectByIdForUpdate(membership.getHouseholdId());
+        if (household == null || !"ACTIVE".equals(household.getStatus())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
         LocalDateTime now = now();
-        DinnerInviteCodeEntity activeInvite = inviteMapper.selectOne(Wrappers.<DinnerInviteCodeEntity>lambdaQuery()
-                .eq(DinnerInviteCodeEntity::getHouseholdId, membership.getHouseholdId())
-                .isNull(DinnerInviteCodeEntity::getRevokedAt)
-                .gt(DinnerInviteCodeEntity::getExpiresAt, now)
-                .last("LIMIT 1"));
+        DinnerInviteCodeEntity activeInvite = inviteMapper.selectActiveByHouseholdIdForUpdate(
+                membership.getHouseholdId(), now);
         if (activeInvite != null) {
             activeInvite.setRevokedAt(now);
             inviteMapper.updateById(activeInvite);
         }
-        DinnerHouseholdEntity household = householdMapper.selectById(membership.getHouseholdId());
         return createInvite(household, userId);
     }
 
@@ -109,19 +109,15 @@ public class DinnerHouseholdService {
     public HouseholdResponse join(Long userId, String inviteCode) {
         requireNotInHousehold(userId);
         String codeHash = inviteCodeHasher.hash(inviteCode);
-        DinnerInviteCodeEntity invite = inviteMapper.selectOne(Wrappers.<DinnerInviteCodeEntity>lambdaQuery()
-                .eq(DinnerInviteCodeEntity::getCodeHash, codeHash)
-                .last("LIMIT 1"));
-        if (invite == null || invite.getRevokedAt() != null) {
-            throw new BusinessException(ErrorCode.DINNER_INVITE_INVALID);
-        }
-        if (!invite.getExpiresAt().isAfter(now())) {
-            throw new BusinessException(ErrorCode.DINNER_INVITE_EXPIRED);
-        }
-        DinnerHouseholdEntity household = householdMapper.selectByIdForUpdate(invite.getHouseholdId());
+        DinnerInviteCodeEntity locatedInvite = inviteMapper.selectByCodeHash(codeHash);
+        validateInvite(locatedInvite);
+        DinnerHouseholdEntity household = householdMapper.selectByIdForUpdate(locatedInvite.getHouseholdId());
         if (household == null || !"ACTIVE".equals(household.getStatus())) {
             throw new BusinessException(ErrorCode.DINNER_INVITE_INVALID);
         }
+        DinnerInviteCodeEntity lockedInvite = inviteMapper.selectByIdAndHouseholdIdForUpdate(
+                locatedInvite.getId(), household.getId());
+        validateInvite(lockedInvite);
         long memberCount = countMembers(household.getId());
         if (memberCount >= 2) {
             throw new BusinessException(ErrorCode.DINNER_HOUSEHOLD_FULL);
@@ -132,6 +128,15 @@ public class DinnerHouseholdService {
             throw new BusinessException(ErrorCode.DINNER_ALREADY_IN_HOUSEHOLD);
         }
         return response(household, memberCount + 1);
+    }
+
+    private void validateInvite(DinnerInviteCodeEntity invite) {
+        if (invite == null || invite.getRevokedAt() != null) {
+            throw new BusinessException(ErrorCode.DINNER_INVITE_INVALID);
+        }
+        if (!invite.getExpiresAt().isAfter(now())) {
+            throw new BusinessException(ErrorCode.DINNER_INVITE_EXPIRED);
+        }
     }
 
     private HouseholdCreatedResponse createInvite(DinnerHouseholdEntity household, Long userId) {
