@@ -57,6 +57,26 @@ class ProductionDeploymentContractTest {
         assertThat(manual).doesNotContain("OSHEEEP_DB_PASSWORD=");
     }
 
+    @Test
+    void nginxAssetsDefineApprovedRateLimitsAndHealthEndpoint() throws IOException {
+        String zones = readRequired("deploy/production/nginx/00-osheeep-rate-limit.conf");
+        String locations = readRequired("deploy/production/nginx/osheeep-api-locations.conf");
+
+        assertThat(zones).contains("map $uri $osheeep_auth_limit_key");
+        assertThat(zones).contains("/api/auth/wechat $binary_remote_addr;");
+        assertThat(zones).contains("zone=osheeep_auth:10m rate=12r/m");
+        assertThat(zones).contains("zone=osheeep_api:10m rate=300r/m");
+        assertThat(zones).contains("limit_conn_zone $binary_remote_addr zone=osheeep_conn:10m;");
+        assertThat(locations).contains("location = /healthz");
+        assertThat(locations).contains("proxy_pass http://127.0.0.1:8080/actuator/health;");
+        assertThat(locations).contains("limit_req zone=osheeep_auth burst=5 nodelay;");
+        assertThat(locations).contains("limit_req zone=osheeep_api burst=60 nodelay;");
+        assertThat(locations).contains("limit_conn osheeep_conn 20;");
+        assertThat(locations).contains("limit_req_status 429;");
+        assertThat(locations).contains("limit_conn_status 429;");
+        assertThat(locations).doesNotContain("3000");
+    }
+
     private String readRequired(String relativePath) throws IOException {
         Path path = root.resolve(relativePath);
         assertThat(path).as("required deployment asset %s", relativePath).exists();
