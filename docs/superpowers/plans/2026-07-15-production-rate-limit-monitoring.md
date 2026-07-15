@@ -339,6 +339,14 @@ Use Tencent Cloud's notification-template test feature. Do not stop any producti
 
 ### Task 4: Record Evidence and Close the Checklist
 
+> **Outcome / superseded (2026-07-15):** The historical steps below were resolved
+> with a Lighthouse-equivalent CPU/memory/disk policy rather than CVM event alarms.
+> Tencent Cloud exposed no test-send entry, and the administrator accepted checking
+> delivery on the first real trigger/recovery. Login and API request limits were
+> observed returning 429; the per-IP 20-connection limit and its 429 status were
+> configuration/contract and Nginx syntax verified. CAT remains a trial, with no
+> paid upgrade authorized.
+
 **Files:**
 - Modify: `deploy/production/OPERATIONS.md`
 - Modify: `/Users/longlonglong/Developer/Personal/Apps/osheeep/osheeep-wx/docs/HANDOFF.md`

@@ -70,11 +70,13 @@ class ProductionDeploymentContractTest {
         String locations = readRequired("deploy/production/nginx/osheeep-api-locations.conf");
 
         assertThat(zones).contains("map $uri $osheeep_auth_limit_key");
+        assertThat(zones).contains("default \"\";");
         assertThat(zones).contains("/api/auth/wechat $binary_remote_addr;");
         assertThat(zones).contains("zone=osheeep_auth:10m rate=12r/m");
         assertThat(zones).contains("zone=osheeep_api:10m rate=300r/m");
         assertThat(zones).contains("limit_conn_zone $binary_remote_addr zone=osheeep_conn:10m;");
         assertThat(locations).contains("location = /healthz");
+        assertThat(locations).contains("access_log off;");
         assertThat(locations).contains("proxy_pass http://127.0.0.1:8080/actuator/health;");
         assertThat(locations).contains("limit_req zone=osheeep_auth burst=5 nodelay;");
         assertThat(locations).contains("limit_req zone=osheeep_api burst=60 nodelay;");

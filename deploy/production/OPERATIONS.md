@@ -320,7 +320,7 @@ else
 fi
 
 if test -f "$backup_dir/snippets-directory.absent"; then
-  rmdir /etc/nginx/snippets
+  rmdir /etc/nginx/snippets 2>/dev/null || true
 fi
 
 nginx -t
@@ -340,8 +340,13 @@ curl --silent --output /dev/null --write-out '%{http_code}\n' \
 修改前备份：
 
 ```bash
-cp -a /etc/nginx/conf.d/osheeep.com.conf \
-  "/opt/deploy-backups/osheeep.com.conf.$(date +%Y%m%d-%H%M%S)"
+backup_dir="/opt/deploy-backups/nginx-$(date +%Y%m%d-%H%M%S)"
+install -d -m 700 "$backup_dir"
+cp -a \
+  /etc/nginx/conf.d/osheeep.com.conf \
+  /etc/nginx/conf.d/00-osheeep-rate-limit.conf \
+  /etc/nginx/snippets/osheeep-api-locations.conf \
+  "$backup_dir/"
 ```
 
 检查并平滑重载：
