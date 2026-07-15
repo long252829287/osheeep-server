@@ -14,17 +14,21 @@ import com.osheeep.server.dinner.ingredient.mapper.DinnerIngredientMapper;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class DinnerIngredientService {
+
+    static final ZoneId DATABASE_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final DinnerIngredientMapper ingredientMapper;
     private final DinnerHouseholdInventoryMapper inventoryMapper;
@@ -87,8 +91,8 @@ public class DinnerIngredientService {
         DinnerHouseholdMemberEntity membership = requireMembership(userId);
         DinnerIngredientEntity ingredient = requireActiveIngredient(
                 ingredientId, membership.getHouseholdId());
-        DinnerHouseholdInventoryEntity item = inventoryMapper
-                .selectByHouseholdAndIngredientForUpdate(membership.getHouseholdId(), ingredientId);
+        DinnerHouseholdInventoryEntity item = lockInventoryItem(
+                membership.getHouseholdId(), ingredientId);
         if (item == null) {
             if (expectedVersion != 0L) {
                 throw new BusinessException(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT);
@@ -96,20 +100,20 @@ public class DinnerIngredientService {
             item = new DinnerHouseholdInventoryEntity();
             item.setHouseholdId(membership.getHouseholdId());
             item.setIngredientId(ingredientId);
-            item.setVersion(0L);
+            item.setVersion(1L);
             item.setQuantity(quantity);
             item.setUnit(unit.strip());
             item.setUpdatedBy(userId);
-            inventoryMapper.insert(item);
+            insertInventoryItem(item);
         } else {
-            if (!Objects.equals(item.getVersion(), expectedVersion)) {
+            if (expectedVersion < 1L || !Objects.equals(item.getVersion(), expectedVersion)) {
                 throw new BusinessException(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT);
             }
             item.setQuantity(quantity);
             item.setUnit(unit.strip());
             item.setUpdatedBy(userId);
             item.setVersion(item.getVersion() + 1L);
-            inventoryMapper.updateById(item);
+            updateInventoryItem(item);
         }
         DinnerHouseholdInventoryEntity persisted = inventoryMapper.selectById(item.getId());
         return toInventoryResponse(persisted, ingredient);
@@ -178,6 +182,38 @@ public class DinnerIngredientService {
     }
 
     private Instant instant(LocalDateTime value) {
-        return value == null ? null : value.toInstant(ZoneOffset.UTC);
+        return value == null ? null : value.atZone(DATABASE_ZONE).toInstant();
+    }
+
+    private DinnerHouseholdInventoryEntity lockInventoryItem(
+            Long householdId,
+            Long ingredientId
+    ) {
+        try {
+            return inventoryMapper.selectByHouseholdAndIngredientForUpdate(
+                    householdId, ingredientId);
+        } catch (PessimisticLockingFailureException error) {
+            throw inventoryVersionConflict();
+        }
+    }
+
+    private void insertInventoryItem(DinnerHouseholdInventoryEntity item) {
+        try {
+            inventoryMapper.insert(item);
+        } catch (DuplicateKeyException | PessimisticLockingFailureException error) {
+            throw inventoryVersionConflict();
+        }
+    }
+
+    private void updateInventoryItem(DinnerHouseholdInventoryEntity item) {
+        try {
+            inventoryMapper.updateById(item);
+        } catch (PessimisticLockingFailureException error) {
+            throw inventoryVersionConflict();
+        }
+    }
+
+    private BusinessException inventoryVersionConflict() {
+        return new BusinessException(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT);
     }
 }

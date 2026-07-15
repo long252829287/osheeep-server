@@ -3,6 +3,7 @@ package com.osheeep.server.dinner.ingredient;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -29,6 +30,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DeadlockLoserDataAccessException;
+import org.springframework.dao.DuplicateKeyException;
 
 @ExtendWith(MockitoExtension.class)
 class DinnerIngredientServiceTest {
@@ -57,7 +61,7 @@ class DinnerIngredientServiceTest {
     }
 
     @Test
-    void listsHouseholdInventoryWithIngredientDetailsAndUtcTimestamp() {
+    void interpretsDatabaseTimestampInAsiaShanghai() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 2L);
         item.setUpdatedBy(8L);
         item.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 6, 30));
@@ -68,12 +72,12 @@ class DinnerIngredientServiceTest {
 
         assertThat(service.listInventory(7L)).containsExactly(new InventoryItemResponse(
                 3L, "鸡蛋", "蛋奶", new BigDecimal("6.000"), "枚", 2L, 8L,
-                Instant.parse("2026-07-15T06:30:00Z")));
+                Instant.parse("2026-07-14T22:30:00Z")));
     }
 
     @Test
     void creatingAnInventoryItemReturnsDatabaseManagedTimestamp() {
-        DinnerHouseholdInventoryEntity persisted = inventory(11L, 3L, "8.000", "枚", 0L);
+        DinnerHouseholdInventoryEntity persisted = inventory(11L, 3L, "8.000", "枚", 1L);
         persisted.setId(21L);
         persisted.setUpdatedBy(7L);
         persisted.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 7, 30));
@@ -92,10 +96,11 @@ class DinnerIngredientServiceTest {
 
         assertThat(result.quantity()).isEqualByComparingTo("8.000");
         assertThat(result.unit()).isEqualTo("枚");
-        assertThat(result.version()).isZero();
+        assertThat(result.version()).isEqualTo(1L);
         assertThat(result.updatedBy()).isEqualTo(7L);
-        assertThat(result.updatedAt()).isEqualTo(Instant.parse("2026-07-15T07:30:00Z"));
-        verify(inventoryMapper).insert(any(DinnerHouseholdInventoryEntity.class));
+        assertThat(result.updatedAt()).isEqualTo(Instant.parse("2026-07-14T23:30:00Z"));
+        verify(inventoryMapper).insert(argThat((DinnerHouseholdInventoryEntity inserted) ->
+                inserted.getVersion() == 1L));
         verify(inventoryMapper).selectById(21L);
     }
 
@@ -112,6 +117,76 @@ class DinnerIngredientServiceTest {
                         assertThat(error.errorCode())
                                 .isEqualTo(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT));
         verify(inventoryMapper, never()).insert(any(DinnerHouseholdInventoryEntity.class));
+    }
+
+    @Test
+    void existingInventoryItemRejectsCreateOnlyExpectedVersionWithoutMutation() {
+        DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 0L);
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(ingredientMapper.selectById(3L)).thenReturn(
+                ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
+        when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
+                .thenReturn(item);
+
+        assertThatThrownBy(() -> service.upsertInventoryItem(
+                7L, 3L, new BigDecimal("8.000"), "盒", 0L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT));
+        assertThat(item.getQuantity()).isEqualByComparingTo("6.000");
+        assertThat(item.getUnit()).isEqualTo("枚");
+        assertThat(item.getVersion()).isZero();
+        verify(inventoryMapper, never()).updateById(any(DinnerHouseholdInventoryEntity.class));
+    }
+
+    @Test
+    void concurrentInsertDuplicateKeyBecomesVersionConflict() {
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(ingredientMapper.selectById(3L)).thenReturn(
+                ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
+        when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
+        when(inventoryMapper.insert(any(DinnerHouseholdInventoryEntity.class)))
+                .thenThrow(new DuplicateKeyException("concurrent create"));
+
+        assertThatThrownBy(() -> service.upsertInventoryItem(
+                7L, 3L, new BigDecimal("8.000"), "枚", 0L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT));
+    }
+
+    @Test
+    void lockAcquisitionFailureBecomesVersionConflict() {
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(ingredientMapper.selectById(3L)).thenReturn(
+                ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
+        when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
+                .thenThrow(new CannotAcquireLockException("lock wait timeout"));
+
+        assertThatThrownBy(() -> service.upsertInventoryItem(
+                7L, 3L, new BigDecimal("8.000"), "枚", 1L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT));
+    }
+
+    @Test
+    void deadlockFailureBecomesVersionConflict() {
+        DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 1L);
+        item.setId(21L);
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(ingredientMapper.selectById(3L)).thenReturn(
+                ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
+        when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
+                .thenReturn(item);
+        when(inventoryMapper.updateById(item))
+                .thenThrow(new DeadlockLoserDataAccessException("deadlock", null));
+
+        assertThatThrownBy(() -> service.upsertInventoryItem(
+                7L, 3L, new BigDecimal("8.000"), "枚", 1L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT));
     }
 
     @Test
@@ -136,7 +211,7 @@ class DinnerIngredientServiceTest {
         assertThat(result.quantity()).isEqualByComparingTo("8.000");
         assertThat(result.version()).isEqualTo(3L);
         assertThat(result.updatedBy()).isEqualTo(7L);
-        assertThat(result.updatedAt()).isEqualTo(Instant.parse("2026-07-15T07:30:00Z"));
+        assertThat(result.updatedAt()).isEqualTo(Instant.parse("2026-07-14T23:30:00Z"));
         verify(inventoryMapper).updateById(item);
         verify(inventoryMapper).selectById(21L);
     }

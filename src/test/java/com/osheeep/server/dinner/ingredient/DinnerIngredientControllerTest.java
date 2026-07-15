@@ -93,13 +93,14 @@ class DinnerIngredientControllerTest {
     @Test
     void permitsNullQuantityButRejectsInvalidUnitAndVersion() throws Exception {
         when(ingredientService.upsertInventoryItem(7L, 3L, null, "枚", 0L))
-                .thenReturn(new InventoryItemResponse(3L, "鸡蛋", "蛋奶", null, "枚", 0L, 7L, null));
+                .thenReturn(new InventoryItemResponse(3L, "鸡蛋", "蛋奶", null, "枚", 1L, 7L, null));
 
         mockMvc.perform(authenticated(put("/api/dinner/inventory/3"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"quantity\":null,\"unit\":\"枚\",\"version\":0}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.quantity").doesNotExist());
+                .andExpect(jsonPath("$.data.quantity").doesNotExist())
+                .andExpect(jsonPath("$.data.version").value(1));
         mockMvc.perform(authenticated(put("/api/dinner/inventory/3"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"quantity\":-0.001,\"unit\":\"   \",\"version\":-1}"))

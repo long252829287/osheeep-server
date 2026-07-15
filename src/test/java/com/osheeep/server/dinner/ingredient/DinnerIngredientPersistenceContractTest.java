@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.osheeep.server.dinner.ingredient.entity.DinnerHouseholdInventoryEntity;
 import com.osheeep.server.dinner.ingredient.mapper.DinnerHouseholdInventoryMapper;
 import java.math.BigDecimal;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
 class DinnerIngredientPersistenceContractTest {
@@ -21,5 +23,13 @@ class DinnerIngredientPersistenceContractTest {
         assertThat(item.getVersion()).isEqualTo(2L);
         assertThat(DinnerHouseholdInventoryMapper.class.getMethod(
                 "selectByHouseholdAndIngredientForUpdate", Long.class, Long.class)).isNotNull();
+    }
+
+    @Test
+    void inventoryMigrationReservesZeroForCreateOnlyRequests() throws Exception {
+        String migration = Files.readString(Path.of(
+                "src/main/resources/db/migration/V5__add_recipe_ingredients_and_household_inventory.sql"));
+
+        assertThat(migration).contains("version BIGINT NOT NULL DEFAULT 1");
     }
 }

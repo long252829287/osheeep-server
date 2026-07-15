@@ -39,7 +39,7 @@ CREATE TABLE dinner_household_inventory (
     ingredient_id BIGINT NOT NULL,
     quantity DECIMAL(12,3) NULL,
     unit VARCHAR(16) NOT NULL,
-    version BIGINT NOT NULL DEFAULT 0,
+    version BIGINT NOT NULL DEFAULT 1,
     updated_by BIGINT NOT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),

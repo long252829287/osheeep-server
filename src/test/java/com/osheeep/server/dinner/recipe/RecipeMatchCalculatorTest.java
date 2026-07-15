@@ -8,7 +8,11 @@ import com.osheeep.server.dinner.recipe.dto.RecipeMatchResponse;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 class RecipeMatchCalculatorTest {
 
@@ -89,11 +93,11 @@ class RecipeMatchCalculatorTest {
     void completeInventoryIsAvailable() {
         RecipeMatchResponse result = calculator.calculate(
                 List.of(
-                        new Requirement(1L, "盐", null, "克", true, 1),
+                        new Requirement(1L, "盐", BigDecimal.ONE, "克", true, 1),
                         new Requirement(
                                 2L, "面粉", new BigDecimal("200"), "克", true, 2)),
                 Map.of(
-                        1L, new Stock(null, "克"),
+                        1L, new Stock(BigDecimal.ONE, "克"),
                         2L, new Stock(new BigDecimal("200.0"), "克")));
 
         assertThat(result.status()).isEqualTo("AVAILABLE");
@@ -102,6 +106,29 @@ class RecipeMatchCalculatorTest {
         assertThat(result.matchPercent()).isEqualTo(100);
         assertThat(result.missingIngredients()).isEmpty();
         assertThat(result.unknownQuantityIngredients()).isEmpty();
+    }
+
+    @ParameterizedTest(name = "required={0}, stock={1}")
+    @MethodSource("nullableRequiredQuantities")
+    void anyNullableRequiredQuantityIsMatchedButUnknown(
+            BigDecimal requiredQuantity,
+            BigDecimal stockQuantity
+    ) {
+        RecipeMatchResponse result = calculator.calculate(
+                List.of(new Requirement(1L, "盐", requiredQuantity, "克", true, 1)),
+                Map.of(1L, new Stock(stockQuantity, "克")));
+
+        assertThat(result.status()).isEqualTo("UNKNOWN_QUANTITY");
+        assertThat(result.matchedRequired()).isEqualTo(1);
+        assertThat(result.missingIngredients()).isEmpty();
+        assertThat(result.unknownQuantityIngredients()).containsExactly("盐");
+    }
+
+    private static Stream<Arguments> nullableRequiredQuantities() {
+        return Stream.of(
+                Arguments.of(null, new BigDecimal("3")),
+                Arguments.of(new BigDecimal("3"), null),
+                Arguments.of(null, null));
     }
 
     @Test

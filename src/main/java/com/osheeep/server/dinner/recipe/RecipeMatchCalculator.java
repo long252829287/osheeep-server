@@ -39,7 +39,7 @@ public final class RecipeMatchCalculator {
             Stock stock = inventory.get(requirement.ingredientId());
             if (stock == null || !stock.unit().equals(requirement.unit())) {
                 missing.add(requirement.name());
-            } else if (stock.quantity() == null && requirement.quantity() != null) {
+            } else if (stock.quantity() == null || requirement.quantity() == null) {
                 matchedRequired++;
                 unknown.add(requirement.name());
             } else if (stock.quantity() != null && requirement.quantity() != null
