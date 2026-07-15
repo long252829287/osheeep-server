@@ -3,10 +3,13 @@ package com.osheeep.server.dinner.ingredient;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
@@ -69,11 +72,20 @@ class DinnerIngredientServiceTest {
     }
 
     @Test
-    void creatingAnInventoryItemStartsAtVersionZeroAndTrimsUnit() {
+    void creatingAnInventoryItemReturnsDatabaseManagedTimestamp() {
+        DinnerHouseholdInventoryEntity persisted = inventory(11L, 3L, "8.000", "枚", 0L);
+        persisted.setId(21L);
+        persisted.setUpdatedBy(7L);
+        persisted.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 7, 30));
         when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
+        doAnswer(invocation -> {
+            invocation.<DinnerHouseholdInventoryEntity>getArgument(0).setId(21L);
+            return 1;
+        }).when(inventoryMapper).insert(any(DinnerHouseholdInventoryEntity.class));
+        when(inventoryMapper.selectById(21L)).thenReturn(persisted);
 
         InventoryItemResponse result = service.upsertInventoryItem(
                 7L, 3L, new BigDecimal("8.000"), "  枚  ", 0L);
@@ -82,7 +94,9 @@ class DinnerIngredientServiceTest {
         assertThat(result.unit()).isEqualTo("枚");
         assertThat(result.version()).isZero();
         assertThat(result.updatedBy()).isEqualTo(7L);
+        assertThat(result.updatedAt()).isEqualTo(Instant.parse("2026-07-15T07:30:00Z"));
         verify(inventoryMapper).insert(any(DinnerHouseholdInventoryEntity.class));
+        verify(inventoryMapper).selectById(21L);
     }
 
     @Test
@@ -101,21 +115,40 @@ class DinnerIngredientServiceTest {
     }
 
     @Test
-    void updatingAnInventoryItemIncrementsVersion() {
+    void updatingAnInventoryItemReturnsRefreshedDatabaseTimestamp() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 2L);
+        item.setId(21L);
+        item.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 6, 30));
+        DinnerHouseholdInventoryEntity persisted = inventory(11L, 3L, "8.000", "枚", 3L);
+        persisted.setId(21L);
+        persisted.setUpdatedBy(7L);
+        persisted.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 7, 30));
         when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
                 .thenReturn(item);
+        when(inventoryMapper.selectById(21L)).thenReturn(persisted);
 
         InventoryItemResponse result = service.upsertInventoryItem(
                 7L, 3L, new BigDecimal("8.000"), "枚", 2L);
 
         assertThat(result.quantity()).isEqualByComparingTo("8.000");
         assertThat(result.version()).isEqualTo(3L);
-        assertThat(item.getUpdatedBy()).isEqualTo(7L);
+        assertThat(result.updatedBy()).isEqualTo(7L);
+        assertThat(result.updatedAt()).isEqualTo(Instant.parse("2026-07-15T07:30:00Z"));
         verify(inventoryMapper).updateById(item);
+        verify(inventoryMapper).selectById(21L);
+    }
+
+    @Test
+    void inventoryTimestampIsExcludedFromApplicationWrites() throws Exception {
+        TableField mapping = DinnerHouseholdInventoryEntity.class
+                .getDeclaredField("updatedAt")
+                .getAnnotation(TableField.class);
+
+        assertThat(mapping.insertStrategy()).isEqualTo(FieldStrategy.NEVER);
+        assertThat(mapping.updateStrategy()).isEqualTo(FieldStrategy.NEVER);
     }
 
     @Test

@@ -111,7 +111,8 @@ public class DinnerIngredientService {
             item.setVersion(item.getVersion() + 1L);
             inventoryMapper.updateById(item);
         }
-        return toInventoryResponse(item, ingredient);
+        DinnerHouseholdInventoryEntity persisted = inventoryMapper.selectById(item.getId());
+        return toInventoryResponse(persisted, ingredient);
     }
 
     @Transactional

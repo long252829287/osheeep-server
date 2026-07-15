@@ -1,6 +1,7 @@
 package com.osheeep.server.dinner.ingredient;
 
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -109,6 +110,21 @@ class DinnerIngredientControllerTest {
                         .content("{\"quantity\":1,\"unit\":\"12345678901234567\",\"version\":0}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+    }
+
+    @Test
+    void rejectsQuantityOutsideInventoryDecimalPrecision() throws Exception {
+        mockMvc.perform(authenticated(put("/api/dinner/inventory/3"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"quantity\":0.0001,\"unit\":\"枚\",\"version\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+        mockMvc.perform(authenticated(put("/api/dinner/inventory/3"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"quantity\":1000000000.000,\"unit\":\"枚\",\"version\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+        verifyNoInteractions(ingredientService);
     }
 
     @Test
