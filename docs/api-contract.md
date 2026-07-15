@@ -37,13 +37,13 @@ Authorization: Bearer <accessToken>
 
 ## Auth And User
 
-| Method | Path | Request body | Response data |
-| --- | --- | --- | --- |
-| POST | `/api/auth/register` | `email`, `username`, `password`, optional `displayName` | Login response |
-| POST | `/api/auth/login` | `email`, `password` | Login response |
-| POST | `/api/auth/wechat` | `code` from `wx.login` | Login response |
-| POST | `/api/auth/logout` | None | `null` |
-| GET | `/api/users/me` | None | User profile |
+| Method | Path                 | Request body                                            | Response data  |
+| ------ | -------------------- | ------------------------------------------------------- | -------------- |
+| POST   | `/api/auth/register` | `email`, `username`, `password`, optional `displayName` | Login response |
+| POST   | `/api/auth/login`    | `email`, `password`                                     | Login response |
+| POST   | `/api/auth/wechat`   | `code` from `wx.login`                                  | Login response |
+| POST   | `/api/auth/logout`   | None                                                    | `null`         |
+| GET    | `/api/users/me`      | None                                                    | User profile   |
 
 Login response data:
 
@@ -68,12 +68,12 @@ The WeChat endpoint exchanges the temporary code on the server. It never returns
 
 All household endpoints require a bearer token. Each user can belong to one household and each household can contain at most two users.
 
-| Method | Path | Request body | Response data |
-| --- | --- | --- | --- |
-| GET | `/api/dinner/household` | None | Household summary, or omitted `data` when unbound |
-| POST | `/api/dinner/households` | Optional `name` | Household, invite code, expiry |
-| POST | `/api/dinner/households/invite-code/refresh` | None | Household, replacement invite code, expiry |
-| POST | `/api/dinner/households/join` | `inviteCode` | Household summary |
+| Method | Path                                         | Request body    | Response data                                     |
+| ------ | -------------------------------------------- | --------------- | ------------------------------------------------- |
+| GET    | `/api/dinner/household`                      | None            | Household summary, or omitted `data` when unbound |
+| POST   | `/api/dinner/households`                     | Optional `name` | Household, invite code, expiry                    |
+| POST   | `/api/dinner/households/invite-code/refresh` | None            | Household, replacement invite code, expiry        |
+| POST   | `/api/dinner/households/join`                | `inviteCode`    | Household summary                                 |
 
 Household summary fields are `id`, `name`, `timezone`, and `memberCount`. Create and refresh responses add `inviteCode` and ISO-8601 `inviteExpiresAt`. Invite codes expire after 24 hours; only a keyed digest is persisted.
 
@@ -83,19 +83,19 @@ Household business errors are `DINNER_INVITE_INVALID`, `DINNER_INVITE_EXPIRED`, 
 
 Flyway migration `V5__add_recipe_ingredients_and_household_inventory.sql` adds the standard ingredient catalog, recipe requirements, and per-household inventory. Ingredient and recipe requirement quantities use `DECIMAL(12,3)` and may be `null`; units are required. Inventory rows have their own optimistic `version` and record the last updating user and database-managed timestamp.
 
-All routes in this section require a bearer token. The client never supplies a household ID: the service looks up the authenticated user's household membership and uses its `householdId` for catalog visibility, inventory reads/writes, and recipe matching. A user without a household membership receives HTTP 403 with `FORBIDDEN` and message `Access is denied`.
+All routes in this section require a bearer token. The client never supplies a household ID: the service looks up an existing `dinner_household_members` row for the authenticated user and uses its `householdId` for catalog visibility, inventory reads/writes, and recipe matching. The membership schema has no status column, and these ingredient, inventory, and recipe-discovery services do not load or check the referenced household's status. A user without a membership row receives HTTP 403 with `FORBIDDEN` and message `Access is denied`.
 
-| Method | Path | Request | Response data |
-| --- | --- | --- | --- |
-| GET | `/api/dinner/ingredients` | None | Accessible active ingredient array |
-| GET | `/api/dinner/inventory` | None | Current household inventory array |
-| PUT | `/api/dinner/inventory/{ingredientId}` | JSON body: nullable `quantity`, `unit`, `version` | Created or updated inventory item |
-| DELETE | `/api/dinner/inventory/{ingredientId}` | Required query parameter `version` | No data |
-| GET | `/api/dinner/recipes` | Optional query parameters described below | Matched active system recipe array |
+| Method | Path                                   | Request                                           | Response data                      |
+| ------ | -------------------------------------- | ------------------------------------------------- | ---------------------------------- |
+| GET    | `/api/dinner/ingredients`              | None                                              | Accessible active ingredient array |
+| GET    | `/api/dinner/inventory`                | None                                              | Current household inventory array  |
+| PUT    | `/api/dinner/inventory/{ingredientId}` | JSON body: nullable `quantity`, `unit`, `version` | Created or updated inventory item  |
+| DELETE | `/api/dinner/inventory/{ingredientId}` | Required query parameter `version`                | No data                            |
+| GET    | `/api/dinner/recipes`                  | Optional query parameters described below         | Matched active system recipe array |
 
 An ingredient response contains `id`, `name`, `category`, and `defaultUnit`. The catalog contains active system ingredients plus active household-scoped ingredients belonging to the current household, ordered by ID.
 
-An inventory response contains `ingredientId`, `name`, `category`, nullable `quantity`, `unit`, `version`, `updatedBy`, and ISO-8601 `updatedAt`, ordered by inventory row ID. A `null` quantity means the household has the ingredient but has not confirmed its amount; it is not the same as deleting the row. Under the API's non-null JSON serialization, `quantity` is omitted when its value is `null`.
+An inventory response contains `ingredientId`, `name`, `category`, nullable `quantity`, `unit`, `version`, `updatedBy`, and ISO-8601 `updatedAt`, ordered by inventory row ID. A `null` quantity means the household has the ingredient but has not confirmed its amount; it is not the same as deleting the row. `InventoryItemResponse.quantity` is serialized explicitly as JSON `null`. The `ApiResponse` wrapper's `NON_NULL` rule applies only to the wrapper's own fields and does not omit null fields from nested response records.
 
 The PUT body follows these rules:
 
@@ -116,25 +116,25 @@ Temporary include/exclude values affect only this response and are never persist
 
 Each recipe retains the original fields `id`, `name`, `imagePath`, `category`, `flavor`, and `estimatedMinutes`, and adds:
 
-- `ingredients`: ordered items with `ingredientId`, `name`, nullable `quantity`, `unit`, `required`, and `sortOrder`; `quantity` is omitted from JSON when `null`.
+- `ingredients`: ordered items with `ingredientId`, `name`, nullable `quantity`, `unit`, `required`, and `sortOrder`; `RecipeIngredientResponse.quantity` is serialized explicitly as JSON `null` when absent.
 - `match`: `status`, `matchedRequired`, `totalRequired`, `matchPercent`, `missingIngredients`, and `unknownQuantityIngredients`.
 
-Only required ingredients contribute to matching. Missing stock, insufficient quantity, or a unit mismatch is `MISSING`. Present stock with a `null` quantity against a quantified requirement contributes to `matchedRequired` but produces `UNKNOWN_QUANTITY`. Complete required stock is `AVAILABLE`. Recipes are ordered by status (`AVAILABLE`, `UNKNOWN_QUANTITY`, `MISSING`), then descending `matchPercent`, ascending `estimatedMinutes` with unknown duration last, and finally ascending recipe ID.
+Only required ingredients contribute to matching. Missing stock, insufficient quantity, or a unit mismatch is `MISSING`. Present stock with a `null` quantity against a quantified requirement contributes to `matchedRequired` but produces `UNKNOWN_QUANTITY`. Complete required stock is `AVAILABLE`. A recipe with only optional ingredients, or otherwise zero required ingredients, is `AVAILABLE` with `matchedRequired: 0`, `totalRequired: 0`, `matchPercent: 100`, `missingIngredients: []`, and `unknownQuantityIngredients: []`. Recipes are ordered by status (`AVAILABLE`, `UNKNOWN_QUANTITY`, `MISSING`), then descending `matchPercent`, ascending `estimatedMinutes` with unknown duration last, and finally ascending recipe ID.
 
 This is backward compatible for existing recipe consumers: `GET /api/dinner/recipes` remains the same authenticated route, all query parameters default to the old no-filter call, and no original recipe response field was removed. Existing tonight-menu selection and record endpoints and payloads are unchanged.
 
 ## Dinner Menu And Records
 
-All menu, recipe, and record endpoints require a bearer token and an active household membership. The server derives the household and current user from the token.
+All menu and record endpoints require a bearer token and an existing household membership row; the membership schema has no status column. `DinnerMenuService` operations and `DinnerRecordService.complete` additionally load the referenced household and reject a missing or non-`ACTIVE` household. Record list and detail only require the membership row and scope results by its `householdId`. The server derives the household and current user from the token.
 
-| Method | Path | Request body | Response data |
-| --- | --- | --- | --- |
-| GET | `/api/dinner/menus/today` | None | Today's merged menu |
-| PUT | `/api/dinner/menus/today/selections` | `recipeIds`, `version` | Updated merged menu |
-| POST | `/api/dinner/menus/today/confirm` | `version`, UUID v4 `idempotencyKey` | Confirmed menu |
-| POST | `/api/dinner/menus/today/complete` | `version`, UUID v4 `idempotencyKey` | `recordId` and completed menu |
-| GET | `/api/dinner/records` | None | Completed record summaries |
-| GET | `/api/dinner/records/{id}` | None | Record detail and dish snapshots |
+| Method | Path                                 | Request body                        | Response data                    |
+| ------ | ------------------------------------ | ----------------------------------- | -------------------------------- |
+| GET    | `/api/dinner/menus/today`            | None                                | Today's merged menu              |
+| PUT    | `/api/dinner/menus/today/selections` | `recipeIds`, `version`              | Updated merged menu              |
+| POST   | `/api/dinner/menus/today/confirm`    | `version`, UUID v4 `idempotencyKey` | Confirmed menu                   |
+| POST   | `/api/dinner/menus/today/complete`   | `version`, UUID v4 `idempotencyKey` | `recordId` and completed menu    |
+| GET    | `/api/dinner/records`                | None                                | Completed record summaries       |
+| GET    | `/api/dinner/records/{id}`           | None                                | Record detail and dish snapshots |
 
 The menu business day changes at 04:00 in the household timezone. `TodayMenuResponse` contains `id`, `menuDate`, `status`, `version`, `mySelectionCount`, `partnerSelectionCount`, `consensusCount`, `selectedRecipeIds`, merged `dishes`, confirmation/completion metadata, and optional `recordId`. Dish `source` is relative to the current user: `ME`, `PARTNER`, or `BOTH`.
 
@@ -144,10 +144,10 @@ Completion is idempotent by both the request key and the unique menu record. Rep
 
 ## Thought Clusters
 
-| Method | Path | Request body | Response data |
-| --- | --- | --- | --- |
-| GET | `/api/thoughts/clusters` | None | Cluster array |
-| POST | `/api/thoughts/clusters/rebuild` | None | Completed job response |
+| Method | Path                             | Request body | Response data          |
+| ------ | -------------------------------- | ------------ | ---------------------- |
+| GET    | `/api/thoughts/clusters`         | None         | Cluster array          |
+| POST   | `/api/thoughts/clusters/rebuild` | None         | Completed job response |
 
 A cluster contains `id`, `userId`, `title`, `thesis`, `fragmentIds`, `maturityScore`, `missingQuestions`, `status`, and `updatedAt`.
 
@@ -155,10 +155,10 @@ The rebuild response contains `userId`, `status`, `note`, and `jobId`. The first
 
 ## Thought Outlines
 
-| Method | Path | Request body | Response data |
-| --- | --- | --- | --- |
-| POST | `/api/thoughts/outlines/generate` | None | Generated outline |
-| GET | `/api/thoughts/outlines/{id}` | None | Stored outline |
+| Method | Path                              | Request body | Response data     |
+| ------ | --------------------------------- | ------------ | ----------------- |
+| POST   | `/api/thoughts/outlines/generate` | None         | Generated outline |
+| GET    | `/api/thoughts/outlines/{id}`     | None         | Stored outline    |
 
 Generation selects the current user's latest mature cluster, stores the result, and returns it synchronously. The response contains `id`, `userId`, `clusterId`, `titleCandidates`, `coreArgument`, `outline`, `supportingFragmentIds`, `missingMaterials`, and `createdAt`.
 
