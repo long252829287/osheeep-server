@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration;
 
 class ProductionDeploymentContractTest {
     private final Path root = Path.of("").toAbsolutePath();
@@ -18,6 +21,15 @@ class ProductionDeploymentContractTest {
         assertThat(yaml).contains("max-file-size: 20MB");
         assertThat(yaml).contains("max-history: 14");
         assertThat(yaml).contains("total-size-cap: 300MB");
+    }
+
+    @Test
+    void productionApplicationDisablesTheUnusedGeneratedDefaultUser() {
+        SpringBootApplication application =
+                OsheeepServerApplication.class.getAnnotation(SpringBootApplication.class);
+
+        assertThat(Arrays.asList(application.exclude()))
+                .contains(UserDetailsServiceAutoConfiguration.class);
     }
 
     @Test
@@ -37,6 +49,9 @@ class ProductionDeploymentContractTest {
         assertThat(manual).contains("mvn clean package -DskipTests");
         assertThat(manual).contains("systemctl restart osheeep-server");
         assertThat(manual).contains("backup/osheeep-server-$(date +%Y%m%d-%H%M%S).jar");
+        assertThat(manual).contains("mysqldump");
+        assertThat(manual).contains("osheeep_restore_verify_");
+        assertThat(manual).contains("TEMP_DATABASES_REMAINING=0");
         assertThat(manual).contains("curl --fail --silent http://127.0.0.1:8080/actuator/health");
         assertThat(manual).doesNotContain("OSHEEEP_WECHAT_APP_SECRET=");
         assertThat(manual).doesNotContain("OSHEEEP_DB_PASSWORD=");

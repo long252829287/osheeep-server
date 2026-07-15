@@ -1,6 +1,6 @@
 # osheeep-server 生产运维手册
 
-更新日期：2026-07-13
+更新日期：2026-07-15
 
 ## 1. 服务说明
 
@@ -280,7 +280,85 @@ systemctl status nginx --no-pager
 http://127.0.0.1:8080
 ```
 
-## 11. 手工回滚 JAR
+## 11. 数据库备份与临时恢复验证
+
+只有管理员明确授权后才能执行恢复验证。生产库只允许通过应用账号做一致性只读导出；临时库由本机 root socket 创建和删除。不要全局 `export MYSQL_PWD`，否则应用密码会干扰本机 root socket 认证。
+
+加载变量但不打印内容：
+
+```bash
+set -a
+source /opt/osheeep-server/osheeep-server.env
+set +a
+```
+
+创建权限受限的压缩备份：
+
+```bash
+ts=$(date +%Y%m%d-%H%M%S)
+backup_dir=/opt/osheeep-server/backup/db
+backup="$backup_dir/osheeep-${ts}.sql.gz"
+mkdir -p "$backup_dir"
+chmod 750 "$backup_dir"
+umask 077
+
+MYSQL_PWD="$OSHEEEP_DB_PASSWORD" mysqldump \
+  --host="$OSHEEEP_DB_HOST" \
+  --port="$OSHEEEP_DB_PORT" \
+  --user="$OSHEEEP_DB_USERNAME" \
+  --single-transaction \
+  --routines \
+  --triggers \
+  --events \
+  --set-gtid-purged=OFF \
+  --no-tablespaces \
+  "$OSHEEEP_DB_NAME" | gzip -9 > "$backup"
+
+gzip -t "$backup"
+sha256sum "$backup"
+stat -c '%a %U:%G %s' "$backup"
+```
+
+备份文件期望为 `600 root:root`。不得把数据库密码写进命令输出、脚本文件或手册。
+
+恢复到一次性临时库：
+
+```bash
+verify_db="osheeep_restore_verify_${ts//-/}"
+
+cleanup_restore_verify() {
+  unset MYSQL_PWD
+  mysql -NBe "DROP DATABASE IF EXISTS \`$verify_db\`"
+}
+trap cleanup_restore_verify EXIT
+
+unset MYSQL_PWD
+mysql -NBe "CREATE DATABASE \`$verify_db\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+gzip -dc "$backup" | mysql "$verify_db"
+```
+
+从 `information_schema.tables` 取得生产库全部基础表，分别用应用账号和本机 root 查询每张表的 `COUNT(*)`；所有表的行数和 `flyway_schema_history` 记录数必须一致。任何一张表不一致都视为恢复验证失败，不能勾选上线清单。
+
+验证结束后删除临时库并确认没有残留：
+
+```bash
+cleanup_restore_verify
+trap - EXIT
+
+remaining=$(mysql -NBe \
+  "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name LIKE 'osheeep_restore_verify_%'")
+printf 'TEMP_DATABASES_REMAINING=%s\n' "$remaining"
+```
+
+期望结果：
+
+```text
+TEMP_DATABASES_REMAINING=0
+```
+
+2026-07-15 已完成一次实测：17 张表、43 行数据和 4 条 Flyway 记录逐项一致，临时库残留为 0。备份文件路径和哈希应记录在当次交接材料中，但不得记录任何凭据。
+
+## 12. 手工回滚 JAR
 
 列出备份：
 
@@ -314,7 +392,7 @@ curl --fail --silent http://127.0.0.1:8080/actuator/health
 
 应用回滚只使用历史 Spring Boot JAR，不再回退到旧 Node 后端。
 
-## 12. 清理旧备份
+## 13. 清理旧备份
 
 默认保留最近 10 个正常备份：
 
@@ -325,7 +403,7 @@ ls -1t osheeep-server-[0-9]*.jar | tail -n +11 | xargs -r rm -f
 
 带 `failed` 的文件用于故障排查，确认不需要后再手工删除。
 
-## 13. 修改生产环境变量
+## 14. 修改生产环境变量
 
 配置文件：
 
@@ -372,9 +450,9 @@ OSHEEEP_WECHAT_APP_SECRET
 OSHEEEP_DINNER_INVITE_SECRET
 ```
 
-## 14. 常见故障
+## 15. 常见故障
 
-### 14.1 端口 8080 被占用
+### 15.1 端口 8080 被占用
 
 ```bash
 ss -ltnp | grep ':8080 '
@@ -382,7 +460,7 @@ ss -ltnp | grep ':8080 '
 
 确认占用进程后再处理，不要直接结束未知服务。
 
-### 14.2 数据库连接失败
+### 15.2 数据库连接失败
 
 ```bash
 systemctl status mysqld --no-pager
@@ -393,7 +471,7 @@ grep -nE 'CommunicationsException|Access denied' \
 
 检查 DB host、端口、数据库名、账号权限和密码是否与生产配置一致。
 
-### 14.3 Redis 或 RabbitMQ 连接失败
+### 15.3 Redis 或 RabbitMQ 连接失败
 
 ```bash
 systemctl status redis --no-pager
@@ -401,7 +479,7 @@ systemctl status rabbitmq-server --no-pager
 ss -ltnp | grep -E ':6379 |:5672 '
 ```
 
-### 14.4 微信登录失败
+### 15.4 微信登录失败
 
 ```bash
 grep -nE 'Wechat|code2session|40029|40125' \
@@ -410,7 +488,7 @@ grep -nE 'Wechat|code2session|40029|40125' \
 
 检查微信 AppID 和 AppSecret 是否属于当前小程序；不得记录或转发登录 code、session key 和 AppSecret。
 
-### 14.5 内存不足
+### 15.5 内存不足
 
 ```bash
 free -h
@@ -420,7 +498,7 @@ systemctl status osheeep-server --no-pager
 
 服务默认 JVM 上限为 256MB。不要在不了解整机内存的情况下直接增大。
 
-### 14.6 Nginx 返回 502
+### 15.6 Nginx 返回 502
 
 ```bash
 systemctl is-active osheeep-server
@@ -430,7 +508,7 @@ nginx -t
 tail -n 100 /var/log/nginx/error.log
 ```
 
-## 15. 禁止事项
+## 16. 禁止事项
 
 - 不得把 `osheeep-server.env`、密码或密钥提交 Git。
 - 不得在命令行输出、日志或聊天中打印生产配置内容。
