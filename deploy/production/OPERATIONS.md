@@ -253,11 +253,89 @@ journalctl -u osheeep-server -f
 
 ## 10. Nginx 运维
 
-配置文件：
+当前生产配置文件：
 
 ```text
 /etc/nginx/conf.d/osheeep.com.conf
+/etc/nginx/conf.d/00-osheeep-rate-limit.conf
+/etc/nginx/snippets/osheeep-api-locations.conf
 ```
+
+`osheeep.com.conf` 引用 `osheeep-api-locations.conf`；限流共享区必须由按名称先加载的
+`00-osheeep-rate-limit.conf` 定义。三个文件均为 `root:root`、权限 `644`，
+`/etc/nginx/snippets/` 为 `root:root`、权限 `755`。
+
+### 10.1 生产阈值、429 与健康检查
+
+- 微信登录 `POST /api/auth/wechat`：`12r/m`，`burst=5`，超限返回 HTTP `429`。
+- 其他 `/api/`：`300r/m`，`burst=60`；同一来源并发连接上限为 `20`，超限均返回 HTTP `429`。
+- 公网健康检查 `https://www.osheeep.com/healthz` 反向代理到
+  `http://127.0.0.1:8080/actuator/health`，正常正文包含 `UP`。
+
+2026-07-15 的有界验收结果：登录请求为 `400 × 6`、`429 × 2`；通用未登录 API
+请求为 `401 × 74`、`429 × 6`。生产 Nginx 与 `osheeep-server` 均保持
+`active`，`/healthz` 返回 `UP`。这些请求只用于本次上线验收；日常检查不得重复发送
+429 负载。
+
+### 10.2 备份与精确安全回滚
+
+当前活动配置的完整上线前备份为：
+
+```text
+/opt/deploy-backups/osheeep-rate-limit-20260715-105138
+```
+
+两次先前尝试均已安全回滚，其证据目录保留为：
+
+```text
+/opt/deploy-backups/osheeep-rate-limit-20260715-104127
+/opt/deploy-backups/osheeep-rate-limit-20260715-104636
+```
+
+只有管理员明确授权回退限流和公网健康检查时，才在服务器执行以下精确命令。命令先恢复
+虚拟主机，再按备份标记恢复或删除两个新增文件，最后才测试和重载；不要删除上述证据目录。
+
+```bash
+set -Eeuo pipefail
+backup_dir=/opt/deploy-backups/osheeep-rate-limit-20260715-105138
+
+install -o root -g root -m 644 \
+  "$backup_dir/osheeep.com.conf" \
+  /etc/nginx/conf.d/osheeep.com.conf
+
+if test -f "$backup_dir/00-osheeep-rate-limit.conf.absent"; then
+  rm -f /etc/nginx/conf.d/00-osheeep-rate-limit.conf
+else
+  install -o root -g root -m 644 \
+    "$backup_dir/00-osheeep-rate-limit.conf" \
+    /etc/nginx/conf.d/00-osheeep-rate-limit.conf
+fi
+
+if test -f "$backup_dir/osheeep-api-locations.conf.absent"; then
+  rm -f /etc/nginx/snippets/osheeep-api-locations.conf
+else
+  install -o root -g root -m 644 \
+    "$backup_dir/osheeep-api-locations.conf" \
+    /etc/nginx/snippets/osheeep-api-locations.conf
+fi
+
+if test -f "$backup_dir/snippets-directory.absent"; then
+  rmdir /etc/nginx/snippets
+fi
+
+nginx -t
+systemctl reload nginx
+systemctl is-active nginx
+systemctl is-active osheeep-server
+curl --fail --silent http://127.0.0.1:8080/actuator/health
+curl --silent --output /dev/null --write-out '%{http_code}\n' \
+  https://www.osheeep.com/
+```
+
+这会恢复上线前状态并移除公网 `/healthz` 和限流，因此不能作为普通排障步骤执行。如果
+`nginx -t` 失败，不得重载 Nginx。
+
+### 10.3 日常 Nginx 检查
 
 修改前备份：
 
@@ -279,6 +357,30 @@ systemctl status nginx --no-pager
 ```text
 http://127.0.0.1:8080
 ```
+
+### 10.4 腾讯云监控与邮件通知
+
+2026-07-15 已确认以下四个固定名称资源存在、启用并完成绑定：
+
+- CAT 任务 `小家开饭-生产健康检查`：GET
+  `https://www.osheeep.com/healthz`，每 5 分钟一次，北京和深圳共 2 个节点；要求
+  HTTP `200` 且正文包含 `UP`。
+- CAT 策略 `小家开饭-健康检查失败`：正确率 `< 100%`，连续 2 个数据点触发，
+  只筛选上述健康检查目标。
+- 轻量应用服务器策略 `小家开饭-CVM基础故障`：这只是经管理员授权保留固定名称的
+  最小等价策略，不是 CVM 事件告警。它只绑定 1 台生产轻量实例，CPU、内存、磁盘
+  利用率分别 `> 95%` 且连续 5 个 1 分钟数据点满足时告警；外部不可用由 CAT 覆盖。
+- 通知模板 `小家开饭-生产告警邮件`：触发与恢复通知均开启，周一至周日全天生效，
+  仅使用邮件渠道，并绑定上述两个策略。接收人是 1 个已有且已验证的联系人；手册不记录
+  邮箱全文。
+
+腾讯云通知模板列表、详情和编辑页都没有测试发送入口，管理员已接受不做测试收件。不得
+声称测试邮件已发送或收到；首次真实触发和首次真实恢复时再分别核对邮件是否送达。不得为
+制造告警而停止、重启或扰动生产服务。
+
+2026-07-15 检查时 CAT 还是剩余 15 天的试用版。管理员选择保留试用，未授权付费升级；
+试用到期后 CAT 拨测会自动暂停，必须在到期前重新决定付费续用或替代方案。轻量实例的
+CPU、内存、磁盘策略不依赖 CAT 试用。
 
 ## 11. 数据库备份与临时恢复验证
 

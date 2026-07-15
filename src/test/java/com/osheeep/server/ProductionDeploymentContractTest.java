@@ -53,6 +53,13 @@ class ProductionDeploymentContractTest {
         assertThat(manual).contains("osheeep_restore_verify_");
         assertThat(manual).contains("TEMP_DATABASES_REMAINING=0");
         assertThat(manual).contains("curl --fail --silent http://127.0.0.1:8080/actuator/health");
+        assertThat(manual).contains("00-osheeep-rate-limit.conf");
+        assertThat(manual).contains("osheeep-api-locations.conf");
+        assertThat(manual).contains("https://www.osheeep.com/healthz");
+        assertThat(manual).contains("小家开饭-生产健康检查");
+        assertThat(manual).contains("小家开饭-健康检查失败");
+        assertThat(manual).contains("小家开饭-CVM基础故障");
+        assertThat(manual).contains("小家开饭-生产告警邮件");
         assertThat(manual).doesNotContain("OSHEEEP_WECHAT_APP_SECRET=");
         assertThat(manual).doesNotContain("OSHEEEP_DB_PASSWORD=");
     }
