@@ -17,6 +17,10 @@ public enum ErrorCode {
     DINNER_MENU_NOT_CONFIRMED(HttpStatus.CONFLICT, "Dinner menu must be confirmed before completion"),
     DINNER_MENU_COMPLETED(HttpStatus.CONFLICT, "Dinner menu is already completed"),
     DINNER_RECIPE_INVALID(HttpStatus.BAD_REQUEST, "Dinner recipe is invalid"),
+    DINNER_INGREDIENT_INVALID(HttpStatus.BAD_REQUEST, "Dinner ingredient is invalid"),
+    DINNER_INVENTORY_VERSION_CONFLICT(
+            HttpStatus.CONFLICT, "Dinner inventory was updated by another member"),
+    DINNER_INVENTORY_ITEM_NOT_FOUND(HttpStatus.NOT_FOUND, "Dinner inventory item was not found"),
     FORBIDDEN(HttpStatus.FORBIDDEN, "Access is denied"),
     BUSINESS_ERROR(HttpStatus.CONFLICT, "Business rule violation"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error");

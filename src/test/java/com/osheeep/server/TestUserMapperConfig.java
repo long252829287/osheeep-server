@@ -4,6 +4,8 @@ import com.osheeep.server.job.JobMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerInviteCodeMapper;
+import com.osheeep.server.dinner.ingredient.mapper.DinnerHouseholdInventoryMapper;
+import com.osheeep.server.dinner.ingredient.mapper.DinnerIngredientMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuActionMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuSelectionMapper;
@@ -80,6 +82,16 @@ public class TestUserMapperConfig {
     @Bean
     public DinnerInviteCodeMapper dinnerInviteCodeMapper() {
         return Mockito.mock(DinnerInviteCodeMapper.class);
+    }
+
+    @Bean
+    public DinnerIngredientMapper dinnerIngredientMapper() {
+        return Mockito.mock(DinnerIngredientMapper.class);
+    }
+
+    @Bean
+    public DinnerHouseholdInventoryMapper dinnerHouseholdInventoryMapper() {
+        return Mockito.mock(DinnerHouseholdInventoryMapper.class);
     }
 
     @Bean
