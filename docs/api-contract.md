@@ -79,13 +79,56 @@ Household summary fields are `id`, `name`, `timezone`, and `memberCount`. Create
 
 Household business errors are `DINNER_INVITE_INVALID`, `DINNER_INVITE_EXPIRED`, `DINNER_HOUSEHOLD_FULL`, and `DINNER_ALREADY_IN_HOUSEHOLD`.
 
+## Dinner Ingredients, Inventory, And Recipe Discovery
+
+Flyway migration `V5__add_recipe_ingredients_and_household_inventory.sql` adds the standard ingredient catalog, recipe requirements, and per-household inventory. Ingredient and recipe requirement quantities use `DECIMAL(12,3)` and may be `null`; units are required. Inventory rows have their own optimistic `version` and record the last updating user and database-managed timestamp.
+
+All routes in this section require a bearer token. The client never supplies a household ID: the service looks up the authenticated user's household membership and uses its `householdId` for catalog visibility, inventory reads/writes, and recipe matching. A user without a household membership receives HTTP 403 with `FORBIDDEN` and message `Access is denied`.
+
+| Method | Path | Request | Response data |
+| --- | --- | --- | --- |
+| GET | `/api/dinner/ingredients` | None | Accessible active ingredient array |
+| GET | `/api/dinner/inventory` | None | Current household inventory array |
+| PUT | `/api/dinner/inventory/{ingredientId}` | JSON body: nullable `quantity`, `unit`, `version` | Created or updated inventory item |
+| DELETE | `/api/dinner/inventory/{ingredientId}` | Required query parameter `version` | No data |
+| GET | `/api/dinner/recipes` | Optional query parameters described below | Matched active system recipe array |
+
+An ingredient response contains `id`, `name`, `category`, and `defaultUnit`. The catalog contains active system ingredients plus active household-scoped ingredients belonging to the current household, ordered by ID.
+
+An inventory response contains `ingredientId`, `name`, `category`, nullable `quantity`, `unit`, `version`, `updatedBy`, and ISO-8601 `updatedAt`, ordered by inventory row ID. A `null` quantity means the household has the ingredient but has not confirmed its amount; it is not the same as deleting the row. Under the API's non-null JSON serialization, `quantity` is omitted when its value is `null`.
+
+The PUT body follows these rules:
+
+- `quantity` may be `null`; otherwise it must be nonnegative with at most 9 integer digits and 3 fractional digits.
+- `unit` is required, nonblank, at most 16 characters, and is trimmed before persistence.
+- `version` is required and nonnegative. Creating a missing inventory row requires exactly `version: 0` and returns version `0`. Updating an existing row requires its exact current version and increments it by one.
+- Only an active system ingredient or an active ingredient owned by the current household can be stocked.
+
+DELETE also requires the exact current version. A stale PUT or DELETE returns HTTP 409, `DINNER_INVENTORY_VERSION_CONFLICT`, and message `Dinner inventory was updated by another member`. Deleting a row that does not exist returns HTTP 404, `DINNER_INVENTORY_ITEM_NOT_FOUND`, and message `Dinner inventory item was not found`. An inactive, unknown, or foreign-household ingredient on PUT returns HTTP 400, `DINNER_INGREDIENT_INVALID`, and message `Dinner ingredient is invalid`. Request validation failures return HTTP 400 with `VALIDATION_ERROR`.
+
+`GET /api/dinner/recipes` accepts:
+
+- `includeIngredientIds`: a repeated or comma-separated set of ingredient IDs temporarily treated as present when a matching recipe requirement is absent from inventory.
+- `excludeIngredientIds`: a repeated or comma-separated set temporarily removed from effective inventory.
+- `onlyCookable`: boolean, default `false`. When `true`, recipes with match status `MISSING` are removed, while both `AVAILABLE` and `UNKNOWN_QUANTITY` remain.
+
+Temporary include/exclude values affect only this response and are never persisted. Existing household inventory takes precedence over include: include does not replace a known quantity or fix an insufficient quantity. Exclude is applied last, so it wins over both inventory and include when an ID appears in both sets.
+
+Each recipe retains the original fields `id`, `name`, `imagePath`, `category`, `flavor`, and `estimatedMinutes`, and adds:
+
+- `ingredients`: ordered items with `ingredientId`, `name`, nullable `quantity`, `unit`, `required`, and `sortOrder`; `quantity` is omitted from JSON when `null`.
+- `match`: `status`, `matchedRequired`, `totalRequired`, `matchPercent`, `missingIngredients`, and `unknownQuantityIngredients`.
+
+Only required ingredients contribute to matching. Missing stock, insufficient quantity, or a unit mismatch is `MISSING`. Present stock with a `null` quantity against a quantified requirement contributes to `matchedRequired` but produces `UNKNOWN_QUANTITY`. Complete required stock is `AVAILABLE`. Recipes are ordered by status (`AVAILABLE`, `UNKNOWN_QUANTITY`, `MISSING`), then descending `matchPercent`, ascending `estimatedMinutes` with unknown duration last, and finally ascending recipe ID.
+
+This is backward compatible for existing recipe consumers: `GET /api/dinner/recipes` remains the same authenticated route, all query parameters default to the old no-filter call, and no original recipe response field was removed. Existing tonight-menu selection and record endpoints and payloads are unchanged.
+
 ## Dinner Menu And Records
 
 All menu, recipe, and record endpoints require a bearer token and an active household membership. The server derives the household and current user from the token.
 
 | Method | Path | Request body | Response data |
 | --- | --- | --- | --- |
-| GET | `/api/dinner/recipes` | None | Active system recipe array |
 | GET | `/api/dinner/menus/today` | None | Today's merged menu |
 | PUT | `/api/dinner/menus/today/selections` | `recipeIds`, `version` | Updated merged menu |
 | POST | `/api/dinner/menus/today/confirm` | `version`, UUID v4 `idempotencyKey` | Confirmed menu |
