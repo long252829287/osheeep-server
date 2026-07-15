@@ -22,6 +22,7 @@ import com.osheeep.server.dinner.record.dto.RecordSummaryResponse;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -63,7 +64,7 @@ class DinnerMenuControllerTest {
 
     @Test
     void readsRecipesAndTodayMenu() throws Exception {
-        when(recipeService.listSystemRecipes()).thenReturn(List.of(
+        when(recipeService.discover(7L, Set.of(), Set.of(), false)).thenReturn(List.of(
                 new RecipeResponse(1L, "番茄炒蛋", "/assets/recipes/tomato-eggs.jpg", "家常菜", "酸甜", 10)));
         when(menuService.today(7L)).thenReturn(today("DRAFT", 4L, null));
 
