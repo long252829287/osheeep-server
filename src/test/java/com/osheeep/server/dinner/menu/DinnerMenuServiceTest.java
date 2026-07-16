@@ -116,7 +116,8 @@ class DinnerMenuServiceTest {
                 .thenReturn(List.of(selection(31L, 7L, 1L)))
                 .thenReturn(List.of(selection(31L, 7L, 1L), selection(31L, 7L, 2L)));
         when(recipeMapper.selectByIds(any())).thenReturn(List.of(
-                activeRecipe(1L, "小炒黄牛肉"), activeRecipe(2L, "番茄炒蛋")));
+                publishedSystemRecipe(1L, "小炒黄牛肉"),
+                publishedSystemRecipe(2L, "番茄炒蛋")));
 
         var result = service.updateSelections(7L, List.of(1L, 2L), 4L);
 
@@ -151,7 +152,8 @@ class DinnerMenuServiceTest {
                 .thenReturn(menu);
         when(actionMapper.selectOne(any())).thenReturn(null);
         when(selectionMapper.selectList(any())).thenReturn(List.of(selection(31L, 7L, 1L)));
-        when(recipeMapper.selectByIds(any())).thenReturn(List.of(activeRecipe(1L, "番茄炒蛋")));
+        when(recipeMapper.selectByIds(any())).thenReturn(List.of(
+                publishedSystemRecipe(1L, "番茄炒蛋")));
 
         var result = service.confirm(7L, 5L, "00000000-0000-4000-8000-000000000001");
 
@@ -190,7 +192,8 @@ class DinnerMenuServiceTest {
                 .thenReturn(menu);
         when(actionMapper.selectOne(any())).thenReturn(action);
         when(selectionMapper.selectList(any())).thenReturn(List.of(selection(31L, 7L, 1L)));
-        when(recipeMapper.selectByIds(any())).thenReturn(List.of(activeRecipe(1L, "番茄炒蛋")));
+        when(recipeMapper.selectByIds(any())).thenReturn(List.of(
+                publishedSystemRecipe(1L, "番茄炒蛋")));
 
         var result = service.confirm(7L, 5L, action.getIdempotencyKey());
 
@@ -242,10 +245,10 @@ class DinnerMenuServiceTest {
         return recipe;
     }
 
-    private DinnerRecipeEntity activeRecipe(Long id, String name) {
+    private DinnerRecipeEntity publishedSystemRecipe(Long id, String name) {
         DinnerRecipeEntity recipe = recipe(id, name);
         recipe.setScope("SYSTEM");
-        recipe.setStatus("ACTIVE");
+        recipe.setStatus("PUBLISHED");
         return recipe;
     }
 }

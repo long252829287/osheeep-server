@@ -1,0 +1,18 @@
+{
+  "provider": "WIKIMEDIA_COMMONS",
+  "displayName": "番茄炒鸡蛋",
+  "searchKeywords": "番茄 西红柿 鸡蛋 家常菜",
+  "sourcePageUrl": "https://commons.wikimedia.org/wiki/File:Tomato_with_egg.jpg",
+  "originalFileUrl": "https://upload.wikimedia.org/wikipedia/commons/5/56/Tomato_with_egg.jpg",
+  "author": "Kaap bij Sneeuw",
+  "licenseName": "CC0 1.0",
+  "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "acquiredOn": "2026-07-16",
+  "sha256": "0c9df553e9cc5ad1ae7e879dc753436ac60a89b8bb62eae70f2d02f18261e544",
+  "width": 1198,
+  "height": 1091,
+  "originalObjectKey": "internal/recipes/tomato-with-egg/original.jpg",
+  "listObjectKey": "media/recipes/tomato-with-egg-list.webp",
+  "detailObjectKey": "media/recipes/tomato-with-egg-detail.webp",
+  "status": "APPROVED"
+}

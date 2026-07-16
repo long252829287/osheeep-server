@@ -68,7 +68,7 @@ public class DinnerRecipeService {
         List<DinnerRecipeEntity> recipes = recipeMapper.selectList(
                 Wrappers.<DinnerRecipeEntity>lambdaQuery()
                         .eq(DinnerRecipeEntity::getScope, "SYSTEM")
-                        .eq(DinnerRecipeEntity::getStatus, "ACTIVE")
+                        .eq(DinnerRecipeEntity::getStatus, "PUBLISHED")
                         .orderByAsc(DinnerRecipeEntity::getId));
         List<Long> recipeIds = recipes.stream().map(DinnerRecipeEntity::getId).toList();
         List<DinnerRecipeIngredientRow> ingredientRows = recipeIds.isEmpty()
@@ -101,7 +101,7 @@ public class DinnerRecipeService {
     public List<RecipeResponse> listSystemRecipes() {
         return recipeMapper.selectList(Wrappers.<DinnerRecipeEntity>lambdaQuery()
                         .eq(DinnerRecipeEntity::getScope, "SYSTEM")
-                        .eq(DinnerRecipeEntity::getStatus, "ACTIVE")
+                        .eq(DinnerRecipeEntity::getStatus, "PUBLISHED")
                         .orderByAsc(DinnerRecipeEntity::getId))
                 .stream()
                 .map(RecipeResponse::from)

@@ -305,7 +305,7 @@ public class DinnerMenuService {
         }
         List<DinnerRecipeEntity> recipes = recipeMapper.selectByIds(recipeIds);
         boolean valid = recipes.size() == recipeIds.size() && recipes.stream().allMatch(recipe ->
-                "SYSTEM".equals(recipe.getScope()) && "ACTIVE".equals(recipe.getStatus()));
+                "SYSTEM".equals(recipe.getScope()) && "PUBLISHED".equals(recipe.getStatus()));
         if (!valid) {
             throw new BusinessException(ErrorCode.DINNER_RECIPE_INVALID);
         }

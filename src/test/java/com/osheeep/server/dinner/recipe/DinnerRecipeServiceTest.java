@@ -162,11 +162,13 @@ class DinnerRecipeServiceTest {
     private DinnerRecipeEntity recipe(Long id, String name, Integer minutes) {
         DinnerRecipeEntity recipe = new DinnerRecipeEntity();
         recipe.setId(id);
+        recipe.setScope("SYSTEM");
         recipe.setName(name);
         recipe.setImagePath("/assets/recipes/" + id + ".jpg");
         recipe.setCategory("家常菜");
         recipe.setFlavor("咸鲜");
         recipe.setEstimatedMinutes(minutes);
+        recipe.setStatus("PUBLISHED");
         return recipe;
     }
 
