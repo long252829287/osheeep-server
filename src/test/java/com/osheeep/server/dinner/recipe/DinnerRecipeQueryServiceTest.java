@@ -176,6 +176,29 @@ class DinnerRecipeQueryServiceTest {
     }
 
     @Test
+    void listTreatsUnresolvedSelectedImageAsTheImageStepWithoutExtraQueries() {
+        stubActiveMembership(7L, 70L);
+        DinnerRecipeEntity recipe = completeBasics(draft(101L, 7L));
+        recipe.setImageAssetId(8L);
+        when(recipeMapper.selectList(any())).thenReturn(List.of(recipe));
+        when(ingredientMapper.selectWithIngredientNames(List.of(101L)))
+                .thenReturn(List.of(row(101L, 1L, 0)));
+        when(methodMapper.selectList(any())).thenReturn(List.of(method(201L, 101L)));
+        when(stepMapper.selectList(any())).thenReturn(List.of(step(201L, "炒熟", 0)));
+        when(imageAssetService.findApprovedByIds(List.of(8L))).thenReturn(Map.of());
+        when(userMapper.selectByIds(any())).thenReturn(List.of(user(7L, "小羊", "owner")));
+
+        List<FamilyRecipeListItemResponse> result =
+                queryService.list(7L, FamilyRecipeTab.DRAFT);
+
+        assertThat(result).singleElement().satisfies(item -> {
+            assertThat(item.completedStep()).isEqualTo("IMAGE");
+            assertThat(item.imageUrl()).isNull();
+        });
+        verify(imageAssetService).findApprovedByIds(List.of(8L));
+    }
+
+    @Test
     void missingUsersUseTheHouseholdMemberFallbackWithoutPerRowQueries() {
         stubActiveMembership(7L, 70L);
         DinnerRecipeEntity first = draft(101L, 7L);
@@ -278,6 +301,25 @@ class DinnerRecipeQueryServiceTest {
         verify(methodMapper).selectList(any());
         verify(stepMapper).selectList(any());
         verify(imageAssetService).findApprovedByIds(List.of(9L));
+    }
+
+    @Test
+    void detailTreatsUnresolvedSelectedImageAsIncompleteInStableOrder() {
+        stubActiveMembership(7L, 70L);
+        DinnerRecipeEntity recipe = completeBasics(draft(101L, 7L));
+        recipe.setImageAssetId(8L);
+        when(recipeMapper.selectById(101L)).thenReturn(recipe);
+        when(ingredientMapper.selectWithIngredientNames(List.of(101L)))
+                .thenReturn(List.of(row(101L, 1L, 0)));
+        when(methodMapper.selectList(any())).thenReturn(List.of(method(201L, 101L)));
+        when(stepMapper.selectList(any())).thenReturn(List.of(step(201L, "炒熟", 0)));
+        when(imageAssetService.findApprovedByIds(List.of(8L))).thenReturn(Map.of());
+
+        RecipeDraftResponse result = queryService.detail(7L, 101L);
+
+        assertThat(result.image()).isNull();
+        assertThat(result.incompleteSteps()).containsExactly("IMAGE");
+        verify(imageAssetService).findApprovedByIds(List.of(8L));
     }
 
     @Test

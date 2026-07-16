@@ -230,7 +230,7 @@ public class DinnerRecipeQueryService {
         if (!methodComplete(aggregate.methodsByRecipe().get(recipe.getId()))) {
             incomplete.add("METHOD");
         }
-        if (recipe.getImageAssetId() == null) {
+        if (selectedImage(recipe, aggregate) == null) {
             incomplete.add("IMAGE");
         }
         return List.copyOf(incomplete);
