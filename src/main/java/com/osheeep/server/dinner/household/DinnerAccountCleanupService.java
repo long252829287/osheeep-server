@@ -7,6 +7,10 @@ import com.osheeep.server.dinner.household.entity.DinnerInviteCodeEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerInviteCodeMapper;
+import com.osheeep.server.dinner.ingredient.entity.DinnerHouseholdInventoryEntity;
+import com.osheeep.server.dinner.ingredient.entity.DinnerIngredientEntity;
+import com.osheeep.server.dinner.ingredient.mapper.DinnerHouseholdInventoryMapper;
+import com.osheeep.server.dinner.ingredient.mapper.DinnerIngredientMapper;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuActionEntity;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuEntity;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuSelectionEntity;
@@ -14,7 +18,13 @@ import com.osheeep.server.dinner.menu.mapper.DinnerMenuActionMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuSelectionMapper;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeIngredientEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeMethodEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeMethodStepEntity;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeIngredientMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodMapper;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodStepMapper;
 import com.osheeep.server.dinner.record.entity.DinnerCookingRecordEntity;
 import com.osheeep.server.dinner.record.entity.DinnerRecordDishSnapshotEntity;
 import com.osheeep.server.dinner.record.mapper.DinnerCookingRecordMapper;
@@ -32,6 +42,11 @@ public class DinnerAccountCleanupService {
     private final DinnerMenuSelectionMapper selectionMapper;
     private final DinnerMenuActionMapper actionMapper;
     private final DinnerRecipeMapper recipeMapper;
+    private final DinnerRecipeIngredientMapper recipeIngredientMapper;
+    private final DinnerRecipeMethodMapper recipeMethodMapper;
+    private final DinnerRecipeMethodStepMapper recipeMethodStepMapper;
+    private final DinnerHouseholdInventoryMapper inventoryMapper;
+    private final DinnerIngredientMapper ingredientMapper;
     private final DinnerCookingRecordMapper recordMapper;
     private final DinnerRecordDishSnapshotMapper snapshotMapper;
 
@@ -43,6 +58,11 @@ public class DinnerAccountCleanupService {
             DinnerMenuSelectionMapper selectionMapper,
             DinnerMenuActionMapper actionMapper,
             DinnerRecipeMapper recipeMapper,
+            DinnerRecipeIngredientMapper recipeIngredientMapper,
+            DinnerRecipeMethodMapper recipeMethodMapper,
+            DinnerRecipeMethodStepMapper recipeMethodStepMapper,
+            DinnerHouseholdInventoryMapper inventoryMapper,
+            DinnerIngredientMapper ingredientMapper,
             DinnerCookingRecordMapper recordMapper,
             DinnerRecordDishSnapshotMapper snapshotMapper
     ) {
@@ -53,6 +73,11 @@ public class DinnerAccountCleanupService {
         this.selectionMapper = selectionMapper;
         this.actionMapper = actionMapper;
         this.recipeMapper = recipeMapper;
+        this.recipeIngredientMapper = recipeIngredientMapper;
+        this.recipeMethodMapper = recipeMethodMapper;
+        this.recipeMethodStepMapper = recipeMethodStepMapper;
+        this.inventoryMapper = inventoryMapper;
+        this.ingredientMapper = ingredientMapper;
         this.recordMapper = recordMapper;
         this.snapshotMapper = snapshotMapper;
     }
@@ -99,6 +124,16 @@ public class DinnerAccountCleanupService {
                         Wrappers.<DinnerCookingRecordEntity>lambdaQuery()
                                 .eq(DinnerCookingRecordEntity::getHouseholdId, householdId))
                 .stream().map(DinnerCookingRecordEntity::getId).toList();
+        List<Long> recipeIds = recipeMapper.selectList(
+                        Wrappers.<DinnerRecipeEntity>lambdaQuery()
+                                .eq(DinnerRecipeEntity::getHouseholdId, householdId))
+                .stream().map(DinnerRecipeEntity::getId).toList();
+        List<Long> methodIds = recipeIds.isEmpty()
+                ? List.of()
+                : recipeMethodMapper.selectList(
+                                Wrappers.<DinnerRecipeMethodEntity>lambdaQuery()
+                                        .in(DinnerRecipeMethodEntity::getRecipeId, recipeIds))
+                        .stream().map(DinnerRecipeMethodEntity::getId).toList();
 
         if (!recordIds.isEmpty()) {
             snapshotMapper.delete(Wrappers.<DinnerRecordDishSnapshotEntity>lambdaQuery()
@@ -118,8 +153,30 @@ public class DinnerAccountCleanupService {
                 .eq(DinnerInviteCodeEntity::getHouseholdId, householdId));
         memberMapper.delete(Wrappers.<DinnerHouseholdMemberEntity>lambdaQuery()
                 .eq(DinnerHouseholdMemberEntity::getHouseholdId, householdId));
+        inventoryMapper.delete(Wrappers.<DinnerHouseholdInventoryEntity>lambdaQuery()
+                .eq(DinnerHouseholdInventoryEntity::getHouseholdId, householdId));
+        if (!methodIds.isEmpty()) {
+            recipeMethodStepMapper.delete(
+                    Wrappers.<DinnerRecipeMethodStepEntity>lambdaQuery()
+                            .in(DinnerRecipeMethodStepEntity::getMethodId, methodIds));
+        }
+        if (!recipeIds.isEmpty()) {
+            recipeMethodMapper.delete(Wrappers.<DinnerRecipeMethodEntity>lambdaQuery()
+                    .in(DinnerRecipeMethodEntity::getRecipeId, recipeIds));
+            recipeIngredientMapper.delete(
+                    Wrappers.<DinnerRecipeIngredientEntity>lambdaQuery()
+                            .in(DinnerRecipeIngredientEntity::getRecipeId, recipeIds));
+            recipeMapper.update(null, Wrappers.<DinnerRecipeEntity>lambdaUpdate()
+                    .in(DinnerRecipeEntity::getSourceRecipeId, recipeIds)
+                    .set(DinnerRecipeEntity::getSourceRecipeId, null));
+            recipeMapper.update(null, Wrappers.<DinnerRecipeEntity>lambdaUpdate()
+                    .in(DinnerRecipeEntity::getRevisionOfRecipeId, recipeIds)
+                    .set(DinnerRecipeEntity::getRevisionOfRecipeId, null));
+        }
         recipeMapper.delete(Wrappers.<DinnerRecipeEntity>lambdaQuery()
                 .eq(DinnerRecipeEntity::getHouseholdId, householdId));
+        ingredientMapper.delete(Wrappers.<DinnerIngredientEntity>lambdaQuery()
+                .eq(DinnerIngredientEntity::getHouseholdId, householdId));
         householdMapper.deleteById(householdId);
     }
 }

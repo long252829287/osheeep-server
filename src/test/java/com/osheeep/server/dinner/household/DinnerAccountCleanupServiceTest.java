@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -21,6 +22,10 @@ import com.osheeep.server.dinner.household.entity.DinnerInviteCodeEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerInviteCodeMapper;
+import com.osheeep.server.dinner.ingredient.entity.DinnerHouseholdInventoryEntity;
+import com.osheeep.server.dinner.ingredient.entity.DinnerIngredientEntity;
+import com.osheeep.server.dinner.ingredient.mapper.DinnerHouseholdInventoryMapper;
+import com.osheeep.server.dinner.ingredient.mapper.DinnerIngredientMapper;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuActionEntity;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuEntity;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuSelectionEntity;
@@ -28,7 +33,13 @@ import com.osheeep.server.dinner.menu.mapper.DinnerMenuActionMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuSelectionMapper;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeIngredientEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeMethodEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeMethodStepEntity;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeIngredientMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodMapper;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodStepMapper;
 import com.osheeep.server.dinner.record.entity.DinnerCookingRecordEntity;
 import com.osheeep.server.dinner.record.entity.DinnerRecordDishSnapshotEntity;
 import com.osheeep.server.dinner.record.mapper.DinnerCookingRecordMapper;
@@ -58,6 +69,11 @@ class DinnerAccountCleanupServiceTest {
     @Mock private DinnerMenuSelectionMapper selectionMapper;
     @Mock private DinnerMenuActionMapper actionMapper;
     @Mock private DinnerRecipeMapper recipeMapper;
+    @Mock private DinnerRecipeIngredientMapper recipeIngredientMapper;
+    @Mock private DinnerRecipeMethodMapper recipeMethodMapper;
+    @Mock private DinnerRecipeMethodStepMapper recipeMethodStepMapper;
+    @Mock private DinnerHouseholdInventoryMapper inventoryMapper;
+    @Mock private DinnerIngredientMapper ingredientMapper;
     @Mock private DinnerCookingRecordMapper recordMapper;
     @Mock private DinnerRecordDishSnapshotMapper snapshotMapper;
 
@@ -74,6 +90,11 @@ class DinnerAccountCleanupServiceTest {
                         DinnerMenuSelectionEntity.class,
                         DinnerMenuActionEntity.class,
                         DinnerRecipeEntity.class,
+                        DinnerRecipeIngredientEntity.class,
+                        DinnerRecipeMethodEntity.class,
+                        DinnerRecipeMethodStepEntity.class,
+                        DinnerHouseholdInventoryEntity.class,
+                        DinnerIngredientEntity.class,
                         DinnerCookingRecordEntity.class,
                         DinnerRecordDishSnapshotEntity.class)
                 .forEach(entityType -> TableInfoHelper.initTableInfo(assistant, entityType));
@@ -83,7 +104,9 @@ class DinnerAccountCleanupServiceTest {
     void setUp() {
         service = new DinnerAccountCleanupService(
                 householdMapper, memberMapper, inviteMapper, menuMapper, selectionMapper,
-                actionMapper, recipeMapper, recordMapper, snapshotMapper);
+                actionMapper, recipeMapper, recipeIngredientMapper, recipeMethodMapper,
+                recipeMethodStepMapper, inventoryMapper, ingredientMapper,
+                recordMapper, snapshotMapper);
     }
 
     @Test
@@ -121,7 +144,21 @@ class DinnerAccountCleanupServiceTest {
         verify(memberMapper, never()).deleteById(anyLong());
         verify(householdMapper, never()).deleteById(anyLong());
         verifyNoInteractions(menuMapper, selectionMapper, actionMapper, recipeMapper,
-                recordMapper, snapshotMapper);
+                recipeIngredientMapper, recipeMethodMapper, recipeMethodStepMapper,
+                inventoryMapper, ingredientMapper, recordMapper, snapshotMapper);
+    }
+
+    @Test
+    void cleanupConstructorIncludesAggregateAndIngredientDependencies() {
+        assertThat(DinnerAccountCleanupService.class.getConstructors())
+                .singleElement()
+                .satisfies(constructor -> assertThat(constructor.getParameterTypes())
+                        .contains(
+                                DinnerHouseholdInventoryMapper.class,
+                                DinnerIngredientMapper.class,
+                                DinnerRecipeIngredientMapper.class,
+                                DinnerRecipeMethodMapper.class,
+                                DinnerRecipeMethodStepMapper.class));
     }
 
     @Test
@@ -131,11 +168,16 @@ class DinnerAccountCleanupServiceTest {
         menu.setId(21L);
         DinnerCookingRecordEntity record = new DinnerCookingRecordEntity();
         record.setId(41L);
+        DinnerRecipeEntity firstRecipe = recipe(51L);
+        DinnerRecipeEntity secondRecipe = recipe(52L);
+        DinnerRecipeMethodEntity method = recipeMethod(61L, 51L);
         when(memberMapper.selectByUserIdForUpdate(7L)).thenReturn(membership);
         when(householdMapper.selectByIdForUpdate(11L)).thenReturn(household(11L));
         when(memberMapper.selectCount(any())).thenReturn(1L);
         when(menuMapper.selectList(any())).thenReturn(List.of(menu));
         when(recordMapper.selectList(any())).thenReturn(List.of(record));
+        when(recipeMapper.selectList(any())).thenReturn(List.of(firstRecipe, secondRecipe));
+        when(recipeMethodMapper.selectList(any())).thenReturn(List.of(method));
 
         service.removeUser(7L, LocalDateTime.parse("2026-07-13T12:00:00"));
 
@@ -155,7 +197,8 @@ class DinnerAccountCleanupServiceTest {
 
         InOrder order = inOrder(snapshotMapper, recordMapper, actionMapper,
                 selectionMapper, menuMapper, inviteMapper, memberMapper,
-                recipeMapper, householdMapper);
+                inventoryMapper, recipeMethodStepMapper, recipeMethodMapper,
+                recipeIngredientMapper, recipeMapper, ingredientMapper, householdMapper);
         order.verify(snapshotMapper).delete(any());
         order.verify(recordMapper).delete(any());
         order.verify(actionMapper).delete(any());
@@ -163,7 +206,13 @@ class DinnerAccountCleanupServiceTest {
         order.verify(menuMapper).delete(any());
         order.verify(inviteMapper).delete(any());
         order.verify(memberMapper).delete(any());
+        order.verify(inventoryMapper).delete(any());
+        order.verify(recipeMethodStepMapper).delete(any());
+        order.verify(recipeMethodMapper).delete(any());
+        order.verify(recipeIngredientMapper).delete(any());
+        order.verify(recipeMapper, times(2)).update(isNull(), any());
         order.verify(recipeMapper).delete(any());
+        order.verify(ingredientMapper).delete(any());
         order.verify(householdMapper).deleteById(11L);
 
         ArgumentCaptor<Wrapper<DinnerRecordDishSnapshotEntity>> snapshotDelete = wrapperCaptor();
@@ -194,10 +243,53 @@ class DinnerAccountCleanupServiceTest {
         verify(memberMapper).delete(memberDelete.capture());
         assertEqualsCondition(memberDelete.getValue(), "household_id", 11L);
         assertOnlyParameterValues(memberDelete.getValue(), 11L);
+        ArgumentCaptor<Wrapper<DinnerHouseholdInventoryEntity>> inventoryDelete =
+                wrapperCaptor();
+        verify(inventoryMapper).delete(inventoryDelete.capture());
+        assertEqualsCondition(inventoryDelete.getValue(), "household_id", 11L);
+        assertOnlyParameterValues(inventoryDelete.getValue(), 11L);
+        ArgumentCaptor<Wrapper<DinnerRecipeEntity>> recipeSelect = wrapperCaptor();
+        verify(recipeMapper).selectList(recipeSelect.capture());
+        assertEqualsCondition(recipeSelect.getValue(), "household_id", 11L);
+        assertOnlyParameterValues(recipeSelect.getValue(), 11L);
+        ArgumentCaptor<Wrapper<DinnerRecipeMethodEntity>> methodSelect = wrapperCaptor();
+        verify(recipeMethodMapper).selectList(methodSelect.capture());
+        assertInCondition(methodSelect.getValue(), "recipe_id", 51L, 52L);
+        assertOnlyParameterValues(methodSelect.getValue(), 51L, 52L);
+        ArgumentCaptor<Wrapper<DinnerRecipeMethodStepEntity>> stepDelete = wrapperCaptor();
+        verify(recipeMethodStepMapper).delete(stepDelete.capture());
+        assertInCondition(stepDelete.getValue(), "method_id", 61L);
+        assertOnlyParameterValues(stepDelete.getValue(), 61L);
+        ArgumentCaptor<Wrapper<DinnerRecipeMethodEntity>> methodDelete = wrapperCaptor();
+        verify(recipeMethodMapper).delete(methodDelete.capture());
+        assertInCondition(methodDelete.getValue(), "recipe_id", 51L, 52L);
+        assertOnlyParameterValues(methodDelete.getValue(), 51L, 52L);
+        ArgumentCaptor<Wrapper<DinnerRecipeIngredientEntity>> recipeIngredientDelete =
+                wrapperCaptor();
+        verify(recipeIngredientMapper).delete(recipeIngredientDelete.capture());
+        assertInCondition(recipeIngredientDelete.getValue(), "recipe_id", 51L, 52L);
+        assertOnlyParameterValues(recipeIngredientDelete.getValue(), 51L, 52L);
+        ArgumentCaptor<Wrapper<DinnerRecipeEntity>> lineageUpdates = wrapperCaptor();
+        verify(recipeMapper, times(2)).update(isNull(), lineageUpdates.capture());
+        assertUpdateValue(lineageUpdates.getAllValues().get(0), "source_recipe_id", null);
+        assertInCondition(
+                lineageUpdates.getAllValues().get(0), "source_recipe_id", 51L, 52L);
+        assertOnlyParameterValues(
+                lineageUpdates.getAllValues().get(0), 51L, 52L, null);
+        assertUpdateValue(
+                lineageUpdates.getAllValues().get(1), "revision_of_recipe_id", null);
+        assertInCondition(
+                lineageUpdates.getAllValues().get(1), "revision_of_recipe_id", 51L, 52L);
+        assertOnlyParameterValues(
+                lineageUpdates.getAllValues().get(1), 51L, 52L, null);
         ArgumentCaptor<Wrapper<DinnerRecipeEntity>> recipeDelete = wrapperCaptor();
         verify(recipeMapper).delete(recipeDelete.capture());
         assertEqualsCondition(recipeDelete.getValue(), "household_id", 11L);
         assertOnlyParameterValues(recipeDelete.getValue(), 11L);
+        ArgumentCaptor<Wrapper<DinnerIngredientEntity>> ingredientDelete = wrapperCaptor();
+        verify(ingredientMapper).delete(ingredientDelete.capture());
+        assertEqualsCondition(ingredientDelete.getValue(), "household_id", 11L);
+        assertOnlyParameterValues(ingredientDelete.getValue(), 11L);
     }
 
     @Test
@@ -214,7 +306,9 @@ class DinnerAccountCleanupServiceTest {
         assertEqualsCondition(memberDelete.getValue(), "user_id", 7L);
         assertOnlyParameterValues(memberDelete.getValue(), 11L, 7L);
         verifyNoInteractions(inviteMapper, menuMapper, selectionMapper, actionMapper,
-                recipeMapper, recordMapper, snapshotMapper);
+                recipeMapper, recipeIngredientMapper, recipeMethodMapper,
+                recipeMethodStepMapper, inventoryMapper, ingredientMapper,
+                recordMapper, snapshotMapper);
     }
 
     @Test
@@ -231,6 +325,10 @@ class DinnerAccountCleanupServiceTest {
         verify(snapshotMapper, never()).delete(any());
         verify(actionMapper, never()).delete(any());
         verify(selectionMapper, never()).delete(any());
+        verify(recipeMethodStepMapper, never()).delete(any());
+        verify(recipeMethodMapper, never()).delete(any());
+        verify(recipeIngredientMapper, never()).delete(any());
+        verify(recipeMapper, never()).update(isNull(), any());
         ArgumentCaptor<Wrapper<DinnerCookingRecordEntity>> recordDelete = wrapperCaptor();
         verify(recordMapper).delete(recordDelete.capture());
         assertEqualsCondition(recordDelete.getValue(), "household_id", 11L);
@@ -239,6 +337,12 @@ class DinnerAccountCleanupServiceTest {
         verify(menuMapper).delete(menuDelete.capture());
         assertEqualsCondition(menuDelete.getValue(), "household_id", 11L);
         assertOnlyParameterValues(menuDelete.getValue(), 11L);
+        InOrder householdOrder = inOrder(inventoryMapper, recipeMapper,
+                ingredientMapper, householdMapper);
+        householdOrder.verify(inventoryMapper).delete(any());
+        householdOrder.verify(recipeMapper).delete(any());
+        householdOrder.verify(ingredientMapper).delete(any());
+        householdOrder.verify(householdMapper).deleteById(11L);
     }
 
     @Test
@@ -248,7 +352,9 @@ class DinnerAccountCleanupServiceTest {
         service.removeUser(7L, LocalDateTime.parse("2026-07-13T12:00:00"));
 
         verifyNoInteractions(householdMapper, inviteMapper, menuMapper, selectionMapper,
-                actionMapper, recipeMapper, recordMapper, snapshotMapper);
+                actionMapper, recipeMapper, recipeIngredientMapper, recipeMethodMapper,
+                recipeMethodStepMapper, inventoryMapper, ingredientMapper,
+                recordMapper, snapshotMapper);
     }
 
     private DinnerHouseholdMemberEntity membership(Long id, Long householdId, Long userId) {
@@ -263,6 +369,20 @@ class DinnerAccountCleanupServiceTest {
         DinnerHouseholdEntity household = new DinnerHouseholdEntity();
         household.setId(id);
         return household;
+    }
+
+    private DinnerRecipeEntity recipe(Long id) {
+        DinnerRecipeEntity recipe = new DinnerRecipeEntity();
+        recipe.setId(id);
+        recipe.setHouseholdId(11L);
+        return recipe;
+    }
+
+    private DinnerRecipeMethodEntity recipeMethod(Long id, Long recipeId) {
+        DinnerRecipeMethodEntity method = new DinnerRecipeMethodEntity();
+        method.setId(id);
+        method.setRecipeId(recipeId);
+        return method;
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
