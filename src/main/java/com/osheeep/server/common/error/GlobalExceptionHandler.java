@@ -1,6 +1,9 @@
 package com.osheeep.server.common.error;
 
 import com.osheeep.server.common.api.ApiResponse;
+import com.osheeep.server.dinner.recipe.RecipeValidationException;
+import com.osheeep.server.dinner.recipe.dto.RecipeValidationIssue;
+import java.util.List;
 import java.util.stream.Collectors;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -42,6 +45,15 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> handleBusiness(BusinessException exception) {
         return error(exception.errorCode(), exception.getMessage());
+    }
+
+    @ExceptionHandler(RecipeValidationException.class)
+    public ResponseEntity<ApiResponse<List<RecipeValidationIssue>>> handleRecipeValidation(
+            RecipeValidationException exception
+    ) {
+        ErrorCode errorCode = ErrorCode.DINNER_RECIPE_VALIDATION_FAILED;
+        return ResponseEntity.status(errorCode.httpStatus())
+                .body(ApiResponse.error(errorCode, exception.getMessage(), exception.issues()));
     }
 
     @ExceptionHandler(Exception.class)

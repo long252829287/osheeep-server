@@ -16,6 +16,10 @@ public enum ErrorCode {
     DINNER_MENU_VERSION_CONFLICT(HttpStatus.CONFLICT, "Dinner menu was updated by another member"),
     DINNER_MENU_NOT_CONFIRMED(HttpStatus.CONFLICT, "Dinner menu must be confirmed before completion"),
     DINNER_MENU_COMPLETED(HttpStatus.CONFLICT, "Dinner menu is already completed"),
+    DINNER_RECIPE_NOT_FOUND(HttpStatus.NOT_FOUND, "Dinner recipe was not found"),
+    DINNER_RECIPE_VERSION_CONFLICT(HttpStatus.CONFLICT, "Dinner recipe was updated elsewhere"),
+    DINNER_RECIPE_VALIDATION_FAILED(
+            HttpStatus.UNPROCESSABLE_ENTITY, "Dinner recipe is incomplete"),
     DINNER_RECIPE_INVALID(HttpStatus.BAD_REQUEST, "Dinner recipe is invalid"),
     DINNER_INGREDIENT_INVALID(HttpStatus.BAD_REQUEST, "Dinner ingredient is invalid"),
     DINNER_INVENTORY_VERSION_CONFLICT(

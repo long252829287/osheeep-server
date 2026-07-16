@@ -5,6 +5,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -16,8 +17,13 @@ import com.osheeep.server.dinner.recipe.dto.FamilyRecipeListItemResponse;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeTab;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeIngredientResponse;
+import com.osheeep.server.dinner.recipe.dto.RecipeIngredientInput;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodResponse;
+import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepInput;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepResponse;
+import com.osheeep.server.dinner.recipe.dto.ReplaceRecipeIngredientsRequest;
+import com.osheeep.server.dinner.recipe.dto.UpdateDefaultMethodRequest;
+import com.osheeep.server.dinner.recipe.dto.UpdateRecipeBasicInfoRequest;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -29,6 +35,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -61,6 +68,21 @@ class DinnerFamilyRecipeControllerTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
         mockMvc.perform(get("/api/dinner/recipes/101"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
+        mockMvc.perform(put("/api/dinner/recipes/101/basic-info")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
+        mockMvc.perform(put("/api/dinner/recipes/101/ingredients")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"ingredients\":[]}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
+        mockMvc.perform(put("/api/dinner/recipes/101/default-method")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"steps\":[]}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
     }
@@ -152,9 +174,89 @@ class DinnerFamilyRecipeControllerTest {
         verify(queryService).detail(7L, 101L);
     }
 
+    @Test
+    void basicInfoRouteAllowsIncompleteDraftAndReturnsLatestVersion() throws Exception {
+        UpdateRecipeBasicInfoRequest request = new UpdateRecipeBasicInfoRequest(
+                3L, null, null, null, null, null);
+        when(draftService.updateBasicInfo(7L, 101L, request)).thenReturn(blankDraft(4L));
+
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/basic-info"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":3,\"name\":null,\"category\":null,"
+                                + "\"flavor\":null,\"servings\":null,"
+                                + "\"estimatedMinutes\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(101))
+                .andExpect(jsonPath("$.data.version").value(4));
+        verify(draftService).updateBasicInfo(7L, 101L, request);
+    }
+
+    @Test
+    void ingredientRoutePassesValidatedReplacementAndReturnsLatestVersion() throws Exception {
+        ReplaceRecipeIngredientsRequest request = new ReplaceRecipeIngredientsRequest(
+                4L, List.of(new RecipeIngredientInput(1L, null, "克", true)));
+        when(draftService.replaceIngredients(7L, 101L, request)).thenReturn(blankDraft(5L));
+
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/ingredients"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":4,\"ingredients\":[{\"ingredientId\":1,"
+                                + "\"quantity\":null,\"unit\":\"克\",\"required\":true}]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(5));
+        verify(draftService).replaceIngredients(7L, 101L, request);
+    }
+
+    @Test
+    void defaultMethodRoutePassesOrderedStepsAndReturnsLatestVersion() throws Exception {
+        UpdateDefaultMethodRequest request = new UpdateDefaultMethodRequest(
+                5L, "家常做法", "炒",
+                List.of(new RecipeMethodStepInput("热锅"), new RecipeMethodStepInput("")));
+        when(draftService.updateDefaultMethod(7L, 101L, request)).thenReturn(blankDraft(6L));
+
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/default-method"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":5,\"name\":\"家常做法\","
+                                + "\"cookingStyle\":\"炒\",\"steps\":["
+                                + "{\"instruction\":\"热锅\"},{\"instruction\":\"\"}]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(6));
+        verify(draftService).updateDefaultMethod(7L, 101L, request);
+    }
+
+    @Test
+    void writeRoutesEnforceSafeMaximumsAndRequiredNestedFields() throws Exception {
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/basic-info"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"name\":\""
+                                + "菜".repeat(41) + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/ingredients"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"ingredients\":[{"
+                                + "\"ingredientId\":1,\"unit\":\" \","
+                                + "\"required\":true}]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        String steps = java.util.stream.IntStream.range(0, 13)
+                .mapToObj(index -> "{\"instruction\":\"步骤" + index + "\"}")
+                .collect(java.util.stream.Collectors.joining(","));
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/default-method"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"steps\":[" + steps + "]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+    }
+
     private RecipeDraftResponse blankDraft() {
+        return blankDraft(1L);
+    }
+
+    private RecipeDraftResponse blankDraft(Long version) {
         return new RecipeDraftResponse(
-                101L, "DRAFT", 1L, null, null, null, null, null,
+                101L, "DRAFT", version, null, null, null, null, null,
                 List.of(), null, null,
                 List.of("BASIC", "INGREDIENTS", "METHOD", "IMAGE"), null);
     }

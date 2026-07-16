@@ -4,8 +4,11 @@ import com.osheeep.server.OsheeepServerApplication;
 import com.osheeep.server.TestUserMapperConfig;
 import com.osheeep.server.common.api.ApiResponse;
 import com.osheeep.server.common.api.RequestIdFilter;
+import com.osheeep.server.dinner.recipe.RecipeValidationException;
+import com.osheeep.server.dinner.recipe.dto.RecipeValidationIssue;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -94,6 +97,21 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void recipeValidationFailureReturnsStructuredIssuesInData() throws Exception {
+        mockMvc.perform(get("/test/recipe-validation")
+                        .header(RequestIdFilter.REQUEST_ID_HEADER, REQUEST_ID))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.errorCode")
+                        .value("DINNER_RECIPE_VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.message").value("Dinner recipe is incomplete"))
+                .andExpect(jsonPath("$.data[0].step").value("BASIC"))
+                .andExpect(jsonPath("$.data[0].field").value("name"))
+                .andExpect(jsonPath("$.data[0].message").value("请填写菜名"))
+                .andExpect(jsonPath("$.requestId").value(REQUEST_ID));
+    }
+
+    @Test
     void successResponseContainsRequestId() throws Exception {
         mockMvc.perform(get("/test/success")
                         .header(RequestIdFilter.REQUEST_ID_HEADER, REQUEST_ID))
@@ -120,6 +138,12 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/business")
         ApiResponse<String> business() {
             throw new BusinessException(ErrorCode.BUSINESS_ERROR, "cluster already exists");
+        }
+
+        @GetMapping("/recipe-validation")
+        ApiResponse<String> recipeValidation() {
+            throw new RecipeValidationException(List.of(
+                    new RecipeValidationIssue("BASIC", "name", "请填写菜名")));
         }
 
         @GetMapping("/success")

@@ -4,8 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.osheeep.server.common.error.BusinessException;
@@ -14,13 +17,33 @@ import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.ingredient.entity.DinnerIngredientEntity;
+import com.osheeep.server.dinner.ingredient.mapper.DinnerIngredientMapper;
+import com.osheeep.server.dinner.recipe.dto.RecipeIngredientInput;
+import com.osheeep.server.dinner.recipe.dto.RecipeIngredientResponse;
+import com.osheeep.server.dinner.recipe.dto.RecipeMethodResponse;
+import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepInput;
+import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepResponse;
+import com.osheeep.server.dinner.recipe.dto.ReplaceRecipeIngredientsRequest;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
+import com.osheeep.server.dinner.recipe.dto.UpdateDefaultMethodRequest;
+import com.osheeep.server.dinner.recipe.dto.UpdateRecipeBasicInfoRequest;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeIngredientEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeMethodEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeMethodStepEntity;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeIngredientMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodMapper;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodStepMapper;
+import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -28,8 +51,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class DinnerRecipeDraftServiceTest {
 
     @Mock private DinnerRecipeMapper recipeMapper;
+    @Mock private DinnerRecipeIngredientMapper recipeIngredientMapper;
+    @Mock private DinnerRecipeMethodMapper methodMapper;
+    @Mock private DinnerRecipeMethodStepMapper stepMapper;
+    @Mock private DinnerIngredientMapper ingredientMapper;
     @Mock private DinnerHouseholdMemberMapper memberMapper;
     @Mock private DinnerHouseholdMapper householdMapper;
+    @Mock private DinnerRecipeQueryService queryService;
 
     private DinnerRecipeAuthorizer authorizer;
     private DinnerRecipeDraftService service;
@@ -37,7 +65,9 @@ class DinnerRecipeDraftServiceTest {
     @BeforeEach
     void setUp() {
         authorizer = new DinnerRecipeAuthorizer(memberMapper, householdMapper, recipeMapper);
-        service = new DinnerRecipeDraftService(recipeMapper, authorizer);
+        service = new DinnerRecipeDraftService(
+                recipeMapper, recipeIngredientMapper, methodMapper, stepMapper,
+                ingredientMapper, authorizer, queryService);
     }
 
     @Test
@@ -103,6 +133,249 @@ class DinnerRecipeDraftServiceTest {
         assertThat(authorizer.requireOwnedDraft(7L, 101L)).isSameAs(draft);
     }
 
+    @Test
+    void basicInfoSaveLocksExpectedVersionNormalizesTextAndIncrementsOnce() {
+        DinnerRecipeEntity draft = draft(101L, 7L, 70L, 3L);
+        DinnerRecipeMethodEntity method = defaultMethod(201L, 101L, 8);
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
+        when(methodMapper.selectOne(any())).thenReturn(method);
+        when(queryService.detail(7L, 101L)).thenAnswer(ignored -> response(
+                draft, List.of(), null));
+
+        RecipeDraftResponse saved = service.updateBasicInfo(
+                7L, 101L,
+                new UpdateRecipeBasicInfoRequest(
+                        3L, "  番茄炒蛋  ", "  ", " 酸甜 ", 2, 15));
+
+        assertThat(saved.version()).isEqualTo(4L);
+        assertThat(draft.getName()).isEqualTo("番茄炒蛋");
+        assertThat(draft.getCategory()).isNull();
+        assertThat(draft.getFlavor()).isEqualTo("酸甜");
+        assertThat(method.getEstimatedMinutes()).isEqualTo(15);
+        verify(recipeMapper).selectByIdForUpdate(101L);
+        verify(methodMapper).updateById(method);
+        verify(recipeMapper, times(1)).updateById(argThat((DinnerRecipeEntity row) ->
+                row.getVersion() == 4L
+                        && row.getLastModifiedBy().equals(7L)
+                        && row.getName().equals("番茄炒蛋")));
+    }
+
+    @Test
+    void basicInfoSaveDoesNotCreateAMethodWhenNoneExists() {
+        DinnerRecipeEntity draft = draft(101L, 7L, 70L, 1L);
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
+        when(methodMapper.selectOne(any())).thenReturn(null);
+        when(queryService.detail(7L, 101L)).thenAnswer(ignored -> response(
+                draft, List.of(), null));
+
+        service.updateBasicInfo(
+                7L, 101L,
+                new UpdateRecipeBasicInfoRequest(1L, null, null, null, null, null));
+
+        verify(methodMapper, never()).insert(any(DinnerRecipeMethodEntity.class));
+        verify(methodMapper, never()).updateById(any(DinnerRecipeMethodEntity.class));
+        assertThat(draft.getVersion()).isEqualTo(2L);
+    }
+
+    @Test
+    void missingLockedRecipeReturnsNotFoundWithoutMutation() {
+        when(recipeMapper.selectByIdForUpdate(404L)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.updateBasicInfo(
+                7L, 404L,
+                new UpdateRecipeBasicInfoRequest(1L, null, null, null, null, null)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_NOT_FOUND));
+
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+        verifyNoInteractions(methodMapper, queryService);
+    }
+
+    @Test
+    void staleVersionNeverReplacesIngredients() {
+        when(recipeMapper.selectByIdForUpdate(101L))
+                .thenReturn(draft(101L, 7L, 70L, 4L));
+
+        assertThatThrownBy(() -> service.replaceIngredients(
+                7L, 101L,
+                new ReplaceRecipeIngredientsRequest(3L, List.of(
+                        new RecipeIngredientInput(1L, null, "克", true)))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT));
+
+        verifyNoInteractions(recipeIngredientMapper, ingredientMapper, queryService);
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+    }
+
+    @Test
+    void quantityMayBeNullAndVisibleIngredientsReplaceInRequestOrder() {
+        DinnerRecipeEntity draft = draft(101L, 7L, 70L, 1L);
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
+        when(ingredientMapper.selectById(1L))
+                .thenReturn(ingredient(1L, "SYSTEM", null, "ACTIVE", "番茄"));
+        when(ingredientMapper.selectById(2L))
+                .thenReturn(ingredient(2L, "HOUSEHOLD", 70L, "ACTIVE", "鸡蛋"));
+        when(queryService.detail(7L, 101L)).thenReturn(new RecipeDraftResponse(
+                101L, "DRAFT", 2L, null, null, null, null, null,
+                List.of(
+                        new RecipeIngredientResponse(1L, "番茄", null, "克", true, 0),
+                        new RecipeIngredientResponse(
+                                2L, "鸡蛋", new BigDecimal("2.000"), "枚", false, 1)),
+                null, null, List.of("BASIC", "METHOD", "IMAGE"), null));
+
+        RecipeDraftResponse saved = service.replaceIngredients(
+                7L, 101L,
+                new ReplaceRecipeIngredientsRequest(1L, List.of(
+                        new RecipeIngredientInput(1L, null, " 克 ", true),
+                        new RecipeIngredientInput(
+                                2L, new BigDecimal("2.000"), "枚", false))));
+
+        assertThat(saved.version()).isEqualTo(2L);
+        assertThat(saved.ingredients()).first()
+                .satisfies(item -> assertThat(item.quantity()).isNull());
+        ArgumentCaptor<DinnerRecipeIngredientEntity> rows =
+                ArgumentCaptor.forClass(DinnerRecipeIngredientEntity.class);
+        InOrder replacementOrder = inOrder(recipeIngredientMapper, recipeMapper);
+        replacementOrder.verify(recipeIngredientMapper).delete(any());
+        replacementOrder.verify(recipeIngredientMapper, times(2)).insert(rows.capture());
+        replacementOrder.verify(recipeMapper).updateById(draft);
+        assertThat(rows.getAllValues())
+                .extracting(
+                        DinnerRecipeIngredientEntity::getIngredientId,
+                        DinnerRecipeIngredientEntity::getSortOrder,
+                        DinnerRecipeIngredientEntity::getUnit)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(1L, 0, "克"),
+                        org.assertj.core.groups.Tuple.tuple(2L, 1, "枚"));
+    }
+
+    @Test
+    void duplicateIngredientsAreRejectedBeforeDeletingOldRows() {
+        when(recipeMapper.selectByIdForUpdate(101L))
+                .thenReturn(draft(101L, 7L, 70L, 1L));
+
+        assertThatThrownBy(() -> service.replaceIngredients(
+                7L, 101L,
+                new ReplaceRecipeIngredientsRequest(1L, List.of(
+                        new RecipeIngredientInput(1L, null, "克", true),
+                        new RecipeIngredientInput(1L, BigDecimal.ONE, "个", false)))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_INGREDIENT_INVALID));
+
+        verifyNoInteractions(recipeIngredientMapper, ingredientMapper, queryService);
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+    }
+
+    @Test
+    void ingredientOutsideTheDraftHouseholdIsRejectedBeforeDeletingOldRows() {
+        when(recipeMapper.selectByIdForUpdate(101L))
+                .thenReturn(draft(101L, 7L, 70L, 1L));
+        when(ingredientMapper.selectById(1L))
+                .thenReturn(ingredient(1L, "HOUSEHOLD", 71L, "ACTIVE", "私有食材"));
+
+        assertThatThrownBy(() -> service.replaceIngredients(
+                7L, 101L,
+                new ReplaceRecipeIngredientsRequest(1L, List.of(
+                        new RecipeIngredientInput(1L, null, "克", true)))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_INGREDIENT_INVALID));
+
+        verifyNoInteractions(recipeIngredientMapper, queryService);
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+    }
+
+    @Test
+    void defaultMethodUpsertsOneActiveDefaultAndReplacesZeroBasedSteps() {
+        DinnerRecipeEntity draft = draft(101L, 7L, 70L, 2L);
+        draft.setEstimatedMinutes(15);
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
+        when(methodMapper.selectOne(any())).thenReturn(null);
+        when(methodMapper.insert(any(DinnerRecipeMethodEntity.class))).thenAnswer(invocation -> {
+            DinnerRecipeMethodEntity method = invocation.getArgument(0);
+            method.setId(201L);
+            return 1;
+        });
+        when(queryService.detail(7L, 101L)).thenReturn(new RecipeDraftResponse(
+                101L, "DRAFT", 3L, null, null, null, null, 15,
+                List.of(),
+                new RecipeMethodResponse(
+                        201L, "家常做法", "炒",
+                        List.of(
+                                new RecipeMethodStepResponse("热锅", 0),
+                                new RecipeMethodStepResponse("", 1))),
+                null, List.of("BASIC", "INGREDIENTS", "METHOD", "IMAGE"), null));
+
+        RecipeDraftResponse saved = service.updateDefaultMethod(
+                7L, 101L,
+                new UpdateDefaultMethodRequest(
+                        2L, " 家常做法 ", " 炒 ",
+                        List.of(
+                                new RecipeMethodStepInput(" 热锅 "),
+                                new RecipeMethodStepInput("   "))));
+
+        assertThat(saved.version()).isEqualTo(3L);
+        ArgumentCaptor<DinnerRecipeMethodEntity> methodCaptor =
+                ArgumentCaptor.forClass(DinnerRecipeMethodEntity.class);
+        verify(methodMapper).insert(methodCaptor.capture());
+        assertThat(methodCaptor.getValue()).satisfies(method -> {
+            assertThat(method.getRecipeId()).isEqualTo(101L);
+            assertThat(method.getName()).isEqualTo("家常做法");
+            assertThat(method.getCookingStyle()).isEqualTo("炒");
+            assertThat(method.getEstimatedMinutes()).isEqualTo(15);
+            assertThat(method.getIsDefault()).isTrue();
+            assertThat(method.getStatus()).isEqualTo("ACTIVE");
+            assertThat(method.getSortOrder()).isZero();
+        });
+        ArgumentCaptor<DinnerRecipeMethodStepEntity> steps =
+                ArgumentCaptor.forClass(DinnerRecipeMethodStepEntity.class);
+        verify(stepMapper).delete(any());
+        verify(stepMapper, times(2)).insert(steps.capture());
+        assertThat(steps.getAllValues())
+                .extracting(
+                        DinnerRecipeMethodStepEntity::getInstruction,
+                        DinnerRecipeMethodStepEntity::getSortOrder)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("热锅", 0),
+                        org.assertj.core.groups.Tuple.tuple("", 1));
+        verify(recipeMapper, times(1)).updateById(argThat((DinnerRecipeEntity row) ->
+                row.getVersion() == 3L && row.getLastModifiedBy().equals(7L)));
+    }
+
+    @Test
+    void staleVersionNeverReplacesDefaultMethod() {
+        when(recipeMapper.selectByIdForUpdate(101L))
+                .thenReturn(draft(101L, 7L, 70L, 4L));
+
+        assertThatThrownBy(() -> service.updateDefaultMethod(
+                7L, 101L,
+                new UpdateDefaultMethodRequest(
+                        3L, null, null, List.of(new RecipeMethodStepInput("炒熟")))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT));
+
+        verifyNoInteractions(methodMapper, stepMapper, queryService);
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+    }
+
+    @Test
+    void anotherUsersDraftIsForbiddenBeforeAnyChildMutation() {
+        when(recipeMapper.selectByIdForUpdate(101L))
+                .thenReturn(draft(101L, 8L, 70L, 1L));
+
+        assertThatThrownBy(() -> service.replaceIngredients(
+                7L, 101L, new ReplaceRecipeIngredientsRequest(1L, List.of())))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+
+        verifyNoInteractions(recipeIngredientMapper, ingredientMapper, queryService);
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+    }
+
     private DinnerHouseholdMemberEntity member(Long userId, Long householdId) {
         DinnerHouseholdMemberEntity member = new DinnerHouseholdMemberEntity();
         member.setId(11L);
@@ -126,5 +399,59 @@ class DinnerRecipeDraftServiceTest {
         recipe.setStatus(status);
         recipe.setVersion(1L);
         return recipe;
+    }
+
+    private DinnerRecipeEntity draft(Long id, Long creatorId, Long householdId, Long version) {
+        DinnerRecipeEntity draft = recipe(id, creatorId, "DRAFT");
+        draft.setHouseholdId(householdId);
+        draft.setVersion(version);
+        return draft;
+    }
+
+    private DinnerRecipeMethodEntity defaultMethod(Long id, Long recipeId, Integer minutes) {
+        DinnerRecipeMethodEntity method = new DinnerRecipeMethodEntity();
+        method.setId(id);
+        method.setRecipeId(recipeId);
+        method.setEstimatedMinutes(minutes);
+        method.setIsDefault(true);
+        method.setStatus("ACTIVE");
+        method.setSortOrder(0);
+        return method;
+    }
+
+    private DinnerIngredientEntity ingredient(
+            Long id,
+            String scope,
+            Long householdId,
+            String status,
+            String name
+    ) {
+        DinnerIngredientEntity ingredient = new DinnerIngredientEntity();
+        ingredient.setId(id);
+        ingredient.setScope(scope);
+        ingredient.setHouseholdId(householdId);
+        ingredient.setStatus(status);
+        ingredient.setName(name);
+        return ingredient;
+    }
+
+    private RecipeDraftResponse response(
+            DinnerRecipeEntity draft,
+            List<RecipeIngredientResponse> ingredients,
+            RecipeMethodResponse method
+    ) {
+        List<String> incomplete = new ArrayList<>();
+        incomplete.add("BASIC");
+        if (ingredients.isEmpty()) {
+            incomplete.add("INGREDIENTS");
+        }
+        if (method == null) {
+            incomplete.add("METHOD");
+        }
+        incomplete.add("IMAGE");
+        return new RecipeDraftResponse(
+                draft.getId(), draft.getStatus(), draft.getVersion(), draft.getName(),
+                draft.getCategory(), draft.getFlavor(), draft.getServings(),
+                draft.getEstimatedMinutes(), ingredients, method, null, incomplete, null);
     }
 }

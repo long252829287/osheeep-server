@@ -1,6 +1,7 @@
 package com.osheeep.server.dinner.recipe.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -12,13 +13,14 @@ public class DinnerRecipeEntity {
     private Long id;
     private String scope;
     @TableField("household_id") private Long householdId;
-    private String name;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS) private String name;
     @TableField("image_path") private String imagePath;
     @TableField("image_asset_id") private Long imageAssetId;
-    private String category;
-    private String flavor;
-    private Integer servings;
-    @TableField("estimated_minutes") private Integer estimatedMinutes;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS) private String category;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS) private String flavor;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS) private Integer servings;
+    @TableField(value = "estimated_minutes", updateStrategy = FieldStrategy.ALWAYS)
+    private Integer estimatedMinutes;
     @TableField("creator_id") private Long creatorId;
     @TableField("last_modified_by") private Long lastModifiedBy;
     @TableField("source_recipe_id") private Long sourceRecipeId;

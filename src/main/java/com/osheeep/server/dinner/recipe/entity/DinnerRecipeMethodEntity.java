@@ -12,9 +12,11 @@ public class DinnerRecipeMethodEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
     @TableField("recipe_id") private Long recipeId;
-    private String name;
-    @TableField("cooking_style") private String cookingStyle;
-    @TableField("estimated_minutes") private Integer estimatedMinutes;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS) private String name;
+    @TableField(value = "cooking_style", updateStrategy = FieldStrategy.ALWAYS)
+    private String cookingStyle;
+    @TableField(value = "estimated_minutes", updateStrategy = FieldStrategy.ALWAYS)
+    private Integer estimatedMinutes;
     @TableField("is_default") private Boolean isDefault;
     private String status;
     @TableField("sort_order") private Integer sortOrder;
