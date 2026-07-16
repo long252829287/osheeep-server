@@ -34,6 +34,8 @@ osheeep:
     app-secret: ${OSHEEEP_WECHAT_APP_SECRET}
   dinner:
     invite-secret: ${OSHEEEP_DINNER_INVITE_SECRET:${OSHEEEP_JWT_SECRET}}
+    images:
+      public-base-url: ${OSHEEEP_IMAGE_PUBLIC_BASE_URL:https://www.osheeep.com}
 
 logging:
   file:

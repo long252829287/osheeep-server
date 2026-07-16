@@ -15,7 +15,8 @@ public class DinnerRecipeEntity {
     @TableField("household_id") private Long householdId;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String name;
     @TableField("image_path") private String imagePath;
-    @TableField("image_asset_id") private Long imageAssetId;
+    @TableField(value = "image_asset_id", updateStrategy = FieldStrategy.ALWAYS)
+    private Long imageAssetId;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String category;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String flavor;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private Integer servings;

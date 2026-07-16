@@ -35,3 +35,5 @@ osheeep:
     app-secret: test-app-secret
   dinner:
     invite-secret: 0123456789abcdef0123456789abcdef
+    images:
+      public-base-url: https://assets.test

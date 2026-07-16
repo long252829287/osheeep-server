@@ -18,8 +18,8 @@ import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
-import com.osheeep.server.dinner.image.entity.DinnerImageAssetEntity;
-import com.osheeep.server.dinner.image.mapper.DinnerImageAssetMapper;
+import com.osheeep.server.dinner.image.DinnerImageAssetService;
+import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeListItemResponse;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeTab;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
@@ -35,6 +35,7 @@ import com.osheeep.server.user.UserMapper;
 import com.osheeep.server.user.entity.UserEntity;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -58,7 +59,7 @@ class DinnerRecipeQueryServiceTest {
     @Mock private DinnerRecipeIngredientMapper ingredientMapper;
     @Mock private DinnerRecipeMethodMapper methodMapper;
     @Mock private DinnerRecipeMethodStepMapper stepMapper;
-    @Mock private DinnerImageAssetMapper imageMapper;
+    @Mock private DinnerImageAssetService imageAssetService;
     @Mock private UserMapper userMapper;
     @Mock private DinnerHouseholdMemberMapper memberMapper;
     @Mock private DinnerHouseholdMapper householdMapper;
@@ -81,7 +82,7 @@ class DinnerRecipeQueryServiceTest {
         DinnerRecipeAuthorizer authorizer =
                 new DinnerRecipeAuthorizer(memberMapper, householdMapper, recipeMapper);
         queryService = new DinnerRecipeQueryService(
-                recipeMapper, ingredientMapper, methodMapper, stepMapper, imageMapper,
+                recipeMapper, ingredientMapper, methodMapper, stepMapper, imageAssetService,
                 userMapper, authorizer);
     }
 
@@ -131,7 +132,8 @@ class DinnerRecipeQueryServiceTest {
         assertThat(query.getValue().getSqlSegment())
                 .doesNotContain("creator_id")
                 .contains("ORDER BY updated_at DESC,id DESC");
-        verifyNoInteractions(ingredientMapper, methodMapper, stepMapper, imageMapper, userMapper);
+        verifyNoInteractions(
+                ingredientMapper, methodMapper, stepMapper, imageAssetService, userMapper);
     }
 
     @Test
@@ -157,7 +159,8 @@ class DinnerRecipeQueryServiceTest {
         when(stepMapper.selectList(any())).thenReturn(List.of(
                 step(204L, "炒熟", 1),
                 step(205L, "炒熟", 1)));
-        when(imageMapper.selectByIds(any())).thenReturn(List.of(asset(9L)));
+        when(imageAssetService.findApprovedByIds(List.of(9L)))
+                .thenReturn(Map.of(9L, imageResponse(9L)));
         when(userMapper.selectByIds(any()))
                 .thenReturn(List.of(user(7L, null, null)));
 
@@ -168,7 +171,7 @@ class DinnerRecipeQueryServiceTest {
         verify(ingredientMapper).selectWithIngredientNames(List.of(101L, 102L, 103L, 104L, 105L));
         verify(methodMapper).selectList(any());
         verify(stepMapper).selectList(any());
-        verify(imageMapper).selectByIds(any());
+        verify(imageAssetService).findApprovedByIds(List.of(9L));
         verify(userMapper).selectByIds(any());
     }
 
@@ -205,7 +208,7 @@ class DinnerRecipeQueryServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
 
-        verifyNoInteractions(ingredientMapper, methodMapper, stepMapper, imageMapper);
+        verifyNoInteractions(ingredientMapper, methodMapper, stepMapper, imageAssetService);
     }
 
     @ParameterizedTest
@@ -249,7 +252,8 @@ class DinnerRecipeQueryServiceTest {
         when(stepMapper.selectList(any())).thenReturn(List.of(
                 step(201L, "装盘", 2),
                 step(201L, "炒熟", 1)));
-        when(imageMapper.selectByIds(any())).thenReturn(List.of(asset(9L)));
+        when(imageAssetService.findApprovedByIds(List.of(9L)))
+                .thenReturn(Map.of(9L, imageResponse(9L)));
 
         RecipeDraftResponse result = queryService.detail(7L, 101L);
 
@@ -265,16 +269,15 @@ class DinnerRecipeQueryServiceTest {
         assertThat(result.defaultMethod().steps()).extracting(item -> item.sortOrder())
                 .containsExactly(1, 2);
         assertThat(result.image().listUrl())
-                .isEqualTo("/media/recipes/tomato-with-egg-list.webp");
+                .isEqualTo("https://assets.test/media/recipes/tomato-with-egg-list.webp");
         assertThat(result.image().detailUrl())
-                .isEqualTo("/media/recipes/tomato-with-egg-detail.webp");
+                .isEqualTo("https://assets.test/media/recipes/tomato-with-egg-detail.webp");
         assertThat(result.incompleteSteps()).isEmpty();
         assertThat(result.updatedAt()).isEqualTo(Instant.parse("2026-07-16T12:30:00Z"));
         verify(ingredientMapper).selectWithIngredientNames(List.of(101L));
         verify(methodMapper).selectList(any());
         verify(stepMapper).selectList(any());
-        verify(imageMapper).selectByIds(any());
-        verify(imageMapper, never()).selectById(any());
+        verify(imageAssetService).findApprovedByIds(List.of(9L));
     }
 
     @Test
@@ -286,7 +289,8 @@ class DinnerRecipeQueryServiceTest {
         when(ingredientMapper.selectWithIngredientNames(List.of(101L))).thenReturn(List.of());
         when(methodMapper.selectList(any())).thenReturn(List.of(method(201L, 101L)));
         when(stepMapper.selectList(any())).thenReturn(List.of(step(201L, " ", 1)));
-        when(imageMapper.selectByIds(any())).thenReturn(List.of(asset(9L)));
+        when(imageAssetService.findApprovedByIds(List.of(9L)))
+                .thenReturn(Map.of(9L, imageResponse(9L)));
 
         RecipeDraftResponse result = queryService.detail(7L, 101L);
 
@@ -347,20 +351,15 @@ class DinnerRecipeQueryServiceTest {
         return step;
     }
 
-    private DinnerImageAssetEntity asset(Long id) {
-        DinnerImageAssetEntity asset = new DinnerImageAssetEntity();
-        asset.setId(id);
-        asset.setDisplayName("番茄炒鸡蛋");
-        asset.setListObjectKey("media/recipes/tomato-with-egg-list.webp");
-        asset.setDetailObjectKey("media/recipes/tomato-with-egg-detail.webp");
-        asset.setSourcePageUrl("https://commons.wikimedia.org/wiki/File:Tomato_with_egg.jpg");
-        asset.setAuthor("Kaap bij Sneeuw");
-        asset.setLicenseName("CC0 1.0");
-        asset.setLicenseUrl("https://creativecommons.org/publicdomain/zero/1.0/");
-        asset.setAcquiredOn(java.time.LocalDate.of(2026, 7, 16));
-        asset.setOriginalWidth(1198);
-        asset.setOriginalHeight(1091);
-        return asset;
+    private ImageAssetResponse imageResponse(Long id) {
+        return new ImageAssetResponse(
+                id, "番茄炒鸡蛋",
+                "https://assets.test/media/recipes/tomato-with-egg-list.webp",
+                "https://assets.test/media/recipes/tomato-with-egg-detail.webp",
+                "https://commons.wikimedia.org/wiki/File:Tomato_with_egg.jpg",
+                "Kaap bij Sneeuw", "CC0 1.0",
+                "https://creativecommons.org/publicdomain/zero/1.0/",
+                LocalDate.of(2026, 7, 16), 1198, 1091);
     }
 
     private UserEntity user(Long id, String displayName, String username) {

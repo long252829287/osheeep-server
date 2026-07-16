@@ -3,12 +3,14 @@ package com.osheeep.server.dinner.recipe;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
+import com.osheeep.server.dinner.image.DinnerImageAssetService;
 import com.osheeep.server.dinner.ingredient.entity.DinnerIngredientEntity;
 import com.osheeep.server.dinner.ingredient.mapper.DinnerIngredientMapper;
 import com.osheeep.server.dinner.recipe.DinnerRecipeAuthorizer.RecipeAccess;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeIngredientInput;
 import com.osheeep.server.dinner.recipe.dto.ReplaceRecipeIngredientsRequest;
+import com.osheeep.server.dinner.recipe.dto.SelectRecipeImageRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateDefaultMethodRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateRecipeBasicInfoRequest;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
@@ -35,6 +37,7 @@ public class DinnerRecipeDraftService {
     private final DinnerRecipeMethodMapper methodMapper;
     private final DinnerRecipeMethodStepMapper stepMapper;
     private final DinnerIngredientMapper ingredientMapper;
+    private final DinnerImageAssetService imageAssetService;
     private final DinnerRecipeAuthorizer authorizer;
     private final DinnerRecipeQueryService queryService;
 
@@ -44,6 +47,7 @@ public class DinnerRecipeDraftService {
             DinnerRecipeMethodMapper methodMapper,
             DinnerRecipeMethodStepMapper stepMapper,
             DinnerIngredientMapper ingredientMapper,
+            DinnerImageAssetService imageAssetService,
             DinnerRecipeAuthorizer authorizer,
             DinnerRecipeQueryService queryService
     ) {
@@ -52,6 +56,7 @@ public class DinnerRecipeDraftService {
         this.methodMapper = methodMapper;
         this.stepMapper = stepMapper;
         this.ingredientMapper = ingredientMapper;
+        this.imageAssetService = imageAssetService;
         this.authorizer = authorizer;
         this.queryService = queryService;
     }
@@ -162,6 +167,21 @@ public class DinnerRecipeDraftService {
             step.setSortOrder(index);
             stepMapper.insert(step);
         }
+        advance(draft, userId);
+        return queryService.detail(userId, recipeId);
+    }
+
+    @Transactional
+    public RecipeDraftResponse selectImage(
+            Long userId,
+            Long recipeId,
+            SelectRecipeImageRequest request
+    ) {
+        DinnerRecipeEntity draft = lockOwnedDraft(userId, recipeId, request.version());
+        if (request.imageAssetId() != null) {
+            imageAssetService.requireApproved(request.imageAssetId());
+        }
+        draft.setImageAssetId(request.imageAssetId());
         advance(draft, userId);
         return queryService.detail(userId, recipeId);
     }

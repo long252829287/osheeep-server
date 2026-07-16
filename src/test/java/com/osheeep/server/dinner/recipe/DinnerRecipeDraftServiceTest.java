@@ -11,12 +11,16 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.image.DinnerImageAssetService;
+import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
 import com.osheeep.server.dinner.ingredient.entity.DinnerIngredientEntity;
 import com.osheeep.server.dinner.ingredient.mapper.DinnerIngredientMapper;
 import com.osheeep.server.dinner.recipe.dto.RecipeIngredientInput;
@@ -26,6 +30,7 @@ import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepInput;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepResponse;
 import com.osheeep.server.dinner.recipe.dto.ReplaceRecipeIngredientsRequest;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
+import com.osheeep.server.dinner.recipe.dto.SelectRecipeImageRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateDefaultMethodRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateRecipeBasicInfoRequest;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
@@ -37,6 +42,7 @@ import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodStepMapper;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,6 +61,7 @@ class DinnerRecipeDraftServiceTest {
     @Mock private DinnerRecipeMethodMapper methodMapper;
     @Mock private DinnerRecipeMethodStepMapper stepMapper;
     @Mock private DinnerIngredientMapper ingredientMapper;
+    @Mock private DinnerImageAssetService imageAssetService;
     @Mock private DinnerHouseholdMemberMapper memberMapper;
     @Mock private DinnerHouseholdMapper householdMapper;
     @Mock private DinnerRecipeQueryService queryService;
@@ -67,7 +74,7 @@ class DinnerRecipeDraftServiceTest {
         authorizer = new DinnerRecipeAuthorizer(memberMapper, householdMapper, recipeMapper);
         service = new DinnerRecipeDraftService(
                 recipeMapper, recipeIngredientMapper, methodMapper, stepMapper,
-                ingredientMapper, authorizer, queryService);
+                ingredientMapper, imageAssetService, authorizer, queryService);
     }
 
     @Test
@@ -363,6 +370,95 @@ class DinnerRecipeDraftServiceTest {
     }
 
     @Test
+    void approvedImageSelectionUsesTheSharedLockAndAdvancesVersionExactlyOnce() {
+        DinnerRecipeEntity draft = draft(101L, 7L, 70L, 3L);
+        ImageAssetResponse image = imageResponse(9L);
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
+        when(imageAssetService.requireApproved(9L)).thenReturn(image);
+        when(queryService.detail(7L, 101L)).thenReturn(new RecipeDraftResponse(
+                101L, "DRAFT", 4L, null, null, null, null, null,
+                List.of(), null, image, List.of("BASIC", "INGREDIENTS", "METHOD"), null));
+
+        RecipeDraftResponse saved = service.selectImage(
+                7L, 101L, new SelectRecipeImageRequest(3L, 9L));
+
+        assertThat(saved.version()).isEqualTo(4L);
+        assertThat(saved.image().id()).isEqualTo(9L);
+        assertThat(draft.getImageAssetId()).isEqualTo(9L);
+        verify(recipeMapper).selectByIdForUpdate(101L);
+        verify(imageAssetService).requireApproved(9L);
+        verify(recipeMapper, times(1)).updateById(argThat((DinnerRecipeEntity row) ->
+                row.getVersion() == 4L
+                        && row.getLastModifiedBy().equals(7L)
+                        && row.getImageAssetId().equals(9L)));
+        verify(queryService).detail(7L, 101L);
+    }
+
+    @Test
+    void nullImageSelectionClearsTheAssociationAndAdvancesOnce() {
+        DinnerRecipeEntity draft = draft(101L, 7L, 70L, 3L);
+        draft.setImageAssetId(9L);
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
+        when(queryService.detail(7L, 101L)).thenReturn(new RecipeDraftResponse(
+                101L, "DRAFT", 4L, null, null, null, null, null,
+                List.of(), null, null,
+                List.of("BASIC", "INGREDIENTS", "METHOD", "IMAGE"), null));
+
+        RecipeDraftResponse saved = service.selectImage(
+                7L, 101L, new SelectRecipeImageRequest(3L, null));
+
+        assertThat(saved.version()).isEqualTo(4L);
+        assertThat(draft.getImageAssetId()).isNull();
+        verifyNoInteractions(imageAssetService);
+        verify(recipeMapper, times(1)).updateById(draft);
+    }
+
+    @Test
+    void disabledImageIsRejectedBeforeDraftMutationWithExactError() {
+        DinnerRecipeEntity draft = draft(101L, 7L, 70L, 3L);
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
+        when(imageAssetService.requireApproved(8L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_RECIPE_IMAGE_INVALID));
+
+        assertThatThrownBy(() -> service.selectImage(
+                7L, 101L, new SelectRecipeImageRequest(3L, 8L)))
+                .isInstanceOfSatisfying(BusinessException.class, error -> {
+                    assertThat(error.errorCode())
+                            .isEqualTo(ErrorCode.DINNER_RECIPE_IMAGE_INVALID);
+                    assertThat(error.getMessage())
+                            .isEqualTo("Dinner recipe image is unavailable");
+                });
+
+        assertThat(draft.getVersion()).isEqualTo(3L);
+        assertThat(draft.getImageAssetId()).isNull();
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+        verifyNoInteractions(queryService);
+    }
+
+    @Test
+    void staleImageSelectionNeverResolvesOrMutatesTheAsset() {
+        when(recipeMapper.selectByIdForUpdate(101L))
+                .thenReturn(draft(101L, 7L, 70L, 4L));
+
+        assertThatThrownBy(() -> service.selectImage(
+                7L, 101L, new SelectRecipeImageRequest(3L, 9L)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT));
+
+        verifyNoInteractions(imageAssetService, queryService);
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+    }
+
+    @Test
+    void imageAssetAssociationAllowsExplicitNullPersistence() throws Exception {
+        TableField mapping = DinnerRecipeEntity.class.getDeclaredField("imageAssetId")
+                .getAnnotation(TableField.class);
+
+        assertThat(mapping.updateStrategy()).isEqualTo(FieldStrategy.ALWAYS);
+    }
+
+    @Test
     void anotherUsersDraftIsForbiddenBeforeAnyChildMutation() {
         when(recipeMapper.selectByIdForUpdate(101L))
                 .thenReturn(draft(101L, 8L, 70L, 1L));
@@ -433,6 +529,17 @@ class DinnerRecipeDraftServiceTest {
         ingredient.setStatus(status);
         ingredient.setName(name);
         return ingredient;
+    }
+
+    private ImageAssetResponse imageResponse(Long id) {
+        return new ImageAssetResponse(
+                id, "番茄炒鸡蛋",
+                "https://assets.test/media/recipes/tomato-with-egg-list.webp",
+                "https://assets.test/media/recipes/tomato-with-egg-detail.webp",
+                "https://commons.wikimedia.org/wiki/File:Tomato_with_egg.jpg",
+                "Kaap bij Sneeuw", "CC0 1.0",
+                "https://creativecommons.org/publicdomain/zero/1.0/",
+                LocalDate.of(2026, 7, 16), 1198, 1091);
     }
 
     private RecipeDraftResponse response(

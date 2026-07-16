@@ -20,6 +20,8 @@ public enum ErrorCode {
     DINNER_RECIPE_VERSION_CONFLICT(HttpStatus.CONFLICT, "Dinner recipe was updated elsewhere"),
     DINNER_RECIPE_VALIDATION_FAILED(
             HttpStatus.UNPROCESSABLE_ENTITY, "Dinner recipe is incomplete"),
+    DINNER_RECIPE_IMAGE_INVALID(
+            HttpStatus.UNPROCESSABLE_ENTITY, "Dinner recipe image is unavailable"),
     DINNER_RECIPE_INVALID(HttpStatus.BAD_REQUEST, "Dinner recipe is invalid"),
     DINNER_INGREDIENT_INVALID(HttpStatus.BAD_REQUEST, "Dinner ingredient is invalid"),
     DINNER_INVENTORY_VERSION_CONFLICT(

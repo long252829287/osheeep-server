@@ -6,6 +6,7 @@ import com.osheeep.server.dinner.recipe.dto.FamilyRecipeListItemResponse;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeTab;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
 import com.osheeep.server.dinner.recipe.dto.ReplaceRecipeIngredientsRequest;
+import com.osheeep.server.dinner.recipe.dto.SelectRecipeImageRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateDefaultMethodRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateRecipeBasicInfoRequest;
 import jakarta.validation.Valid;
@@ -83,5 +84,14 @@ public class DinnerFamilyRecipeController {
             @Valid @RequestBody UpdateDefaultMethodRequest request
     ) {
         return ApiResponse.ok(draftService.updateDefaultMethod(currentUser.id(), id, request));
+    }
+
+    @PutMapping("/{id}/image")
+    public ApiResponse<RecipeDraftResponse> selectImage(
+            @AuthenticationPrincipal CurrentUser currentUser,
+            @PathVariable Long id,
+            @Valid @RequestBody SelectRecipeImageRequest request
+    ) {
+        return ApiResponse.ok(draftService.selectImage(currentUser.id(), id, request));
     }
 }

@@ -1,9 +1,8 @@
 package com.osheeep.server.dinner.recipe;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.osheeep.server.dinner.image.DinnerImageAssetService;
 import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
-import com.osheeep.server.dinner.image.entity.DinnerImageAssetEntity;
-import com.osheeep.server.dinner.image.mapper.DinnerImageAssetMapper;
 import com.osheeep.server.dinner.recipe.DinnerRecipeAuthorizer.RecipeAccess;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeListItemResponse;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeTab;
@@ -46,7 +45,7 @@ public class DinnerRecipeQueryService {
     private final DinnerRecipeIngredientMapper ingredientMapper;
     private final DinnerRecipeMethodMapper methodMapper;
     private final DinnerRecipeMethodStepMapper stepMapper;
-    private final DinnerImageAssetMapper imageMapper;
+    private final DinnerImageAssetService imageAssetService;
     private final UserMapper userMapper;
     private final DinnerRecipeAuthorizer authorizer;
 
@@ -55,7 +54,7 @@ public class DinnerRecipeQueryService {
             DinnerRecipeIngredientMapper ingredientMapper,
             DinnerRecipeMethodMapper methodMapper,
             DinnerRecipeMethodStepMapper stepMapper,
-            DinnerImageAssetMapper imageMapper,
+            DinnerImageAssetService imageAssetService,
             UserMapper userMapper,
             DinnerRecipeAuthorizer authorizer
     ) {
@@ -63,7 +62,7 @@ public class DinnerRecipeQueryService {
         this.ingredientMapper = ingredientMapper;
         this.methodMapper = methodMapper;
         this.stepMapper = stepMapper;
-        this.imageMapper = imageMapper;
+        this.imageAssetService = imageAssetService;
         this.userMapper = userMapper;
         this.authorizer = authorizer;
     }
@@ -164,10 +163,7 @@ public class DinnerRecipeQueryService {
         if (imageIds.isEmpty()) {
             return Map.of();
         }
-        return imageMapper.selectByIds(imageIds).stream()
-                .collect(Collectors.toMap(
-                        DinnerImageAssetEntity::getId,
-                        this::imageResponse));
+        return imageAssetService.findApprovedByIds(imageIds);
     }
 
     private Map<Long, UserEntity> loadUsers(List<DinnerRecipeEntity> recipes) {
@@ -262,21 +258,6 @@ public class DinnerRecipeQueryService {
                 && !method.steps().isEmpty()
                 && method.steps().stream()
                         .allMatch(step -> StringUtils.hasText(step.instruction()));
-    }
-
-    private ImageAssetResponse imageResponse(DinnerImageAssetEntity asset) {
-        return new ImageAssetResponse(
-                asset.getId(), asset.getDisplayName(), objectUrl(asset.getListObjectKey()),
-                objectUrl(asset.getDetailObjectKey()), asset.getSourcePageUrl(), asset.getAuthor(),
-                asset.getLicenseName(), asset.getLicenseUrl(), asset.getAcquiredOn(),
-                asset.getOriginalWidth(), asset.getOriginalHeight());
-    }
-
-    private String objectUrl(String objectKey) {
-        if (!StringUtils.hasText(objectKey) || objectKey.startsWith("/")) {
-            return objectKey;
-        }
-        return "/" + objectKey;
     }
 
     private String memberName(UserEntity user) {

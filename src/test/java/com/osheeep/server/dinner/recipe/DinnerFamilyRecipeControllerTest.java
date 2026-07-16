@@ -11,6 +11,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.osheeep.server.TestUserMapperConfig;
+import com.osheeep.server.common.error.BusinessException;
+import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.common.security.JwtService;
 import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
@@ -23,6 +25,7 @@ import com.osheeep.server.dinner.recipe.dto.RecipeMethodResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepInput;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepResponse;
 import com.osheeep.server.dinner.recipe.dto.ReplaceRecipeIngredientsRequest;
+import com.osheeep.server.dinner.recipe.dto.SelectRecipeImageRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateDefaultMethodRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateRecipeBasicInfoRequest;
 import java.math.BigDecimal;
@@ -88,6 +91,11 @@ class DinnerFamilyRecipeControllerTest {
                         .content("{\"version\":1,\"steps\":[]}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
+        mockMvc.perform(put("/api/dinner/recipes/101/image")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"imageAssetId\":9}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
     }
 
     @Test
@@ -112,7 +120,8 @@ class DinnerFamilyRecipeControllerTest {
     void familyListRoutesTheTabAndReturnsTheExactListContract() throws Exception {
         when(queryService.list(7L, FamilyRecipeTab.PUBLISHED)).thenReturn(List.of(
                 new FamilyRecipeListItemResponse(
-                        101L, "PUBLISHED", "番茄炒蛋", "/media/recipes/tomato.webp",
+                        101L, "PUBLISHED", "番茄炒蛋",
+                        "https://assets.test/media/recipes/tomato.webp",
                         "家常菜", "咸鲜", 2, 15, 4L, 7L, "小羊",
                         8L, "伙伴", "PREVIEW", Instant.parse("2026-07-16T12:30:00Z"))));
 
@@ -123,7 +132,8 @@ class DinnerFamilyRecipeControllerTest {
                 .andExpect(jsonPath("$.data[0].id").value(101))
                 .andExpect(jsonPath("$.data[0].status").value("PUBLISHED"))
                 .andExpect(jsonPath("$.data[0].name").value("番茄炒蛋"))
-                .andExpect(jsonPath("$.data[0].imageUrl").value("/media/recipes/tomato.webp"))
+                .andExpect(jsonPath("$.data[0].imageUrl")
+                        .value("https://assets.test/media/recipes/tomato.webp"))
                 .andExpect(jsonPath("$.data[0].category").value("家常菜"))
                 .andExpect(jsonPath("$.data[0].flavor").value("咸鲜"))
                 .andExpect(jsonPath("$.data[0].servings").value(2))
@@ -160,9 +170,9 @@ class DinnerFamilyRecipeControllerTest {
                 .andExpect(jsonPath("$.data.defaultMethod.steps[0].sortOrder").value(1))
                 .andExpect(jsonPath("$.data.image.id").value(9))
                 .andExpect(jsonPath("$.data.image.listUrl")
-                        .value("/media/recipes/tomato-with-egg-list.webp"))
+                        .value("https://assets.test/media/recipes/tomato-with-egg-list.webp"))
                 .andExpect(jsonPath("$.data.image.detailUrl")
-                        .value("/media/recipes/tomato-with-egg-detail.webp"))
+                        .value("https://assets.test/media/recipes/tomato-with-egg-detail.webp"))
                 .andExpect(jsonPath("$.data.image.sourcePageUrl")
                         .value("https://commons.wikimedia.org/wiki/File:Tomato_with_egg.jpg"))
                 .andExpect(jsonPath("$.data.image.author").value("Kaap bij Sneeuw"))
@@ -242,6 +252,55 @@ class DinnerFamilyRecipeControllerTest {
     }
 
     @Test
+    void imageRoutePassesVersionedSelectionAndAllowsExplicitClear() throws Exception {
+        SelectRecipeImageRequest select = new SelectRecipeImageRequest(6L, 9L);
+        when(draftService.selectImage(7L, 101L, select)).thenReturn(blankDraft(7L));
+
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/image"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":6,\"imageAssetId\":9}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(7));
+        verify(draftService).selectImage(7L, 101L, select);
+
+        SelectRecipeImageRequest clear = new SelectRecipeImageRequest(7L, null);
+        when(draftService.selectImage(7L, 101L, clear)).thenReturn(blankDraft(8L));
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/image"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":7,\"imageAssetId\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(8));
+        verify(draftService).selectImage(7L, 101L, clear);
+    }
+
+    @Test
+    void imageRouteRejectsNonPositiveVersions() throws Exception {
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/image"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0,\"imageAssetId\":9}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        verifyNoInteractions(draftService);
+    }
+
+    @Test
+    void unavailableImageMapsToTheExactUnprocessableEntityError() throws Exception {
+        SelectRecipeImageRequest request = new SelectRecipeImageRequest(6L, 8L);
+        when(draftService.selectImage(7L, 101L, request))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_RECIPE_IMAGE_INVALID));
+
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/image"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":6,\"imageAssetId\":8}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("DINNER_RECIPE_IMAGE_INVALID"))
+                .andExpect(jsonPath("$.message")
+                        .value("Dinner recipe image is unavailable"));
+    }
+
+    @Test
     void writeRoutesEnforceSafeMaximumsAndRequiredNestedFields() throws Exception {
         mockMvc.perform(authenticated(put("/api/dinner/recipes/101/basic-info"))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -289,8 +348,8 @@ class DinnerFamilyRecipeControllerTest {
                         List.of(new RecipeMethodStepResponse("炒熟", 1))),
                 new ImageAssetResponse(
                         9L, "番茄炒鸡蛋",
-                        "/media/recipes/tomato-with-egg-list.webp",
-                        "/media/recipes/tomato-with-egg-detail.webp",
+                        "https://assets.test/media/recipes/tomato-with-egg-list.webp",
+                        "https://assets.test/media/recipes/tomato-with-egg-detail.webp",
                         "https://commons.wikimedia.org/wiki/File:Tomato_with_egg.jpg",
                         "Kaap bij Sneeuw", "CC0 1.0",
                         "https://creativecommons.org/publicdomain/zero/1.0/",
