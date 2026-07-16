@@ -11,6 +11,6 @@ public record RecipeIngredientInput(
         @NotNull Long ingredientId,
         @DecimalMin("0.000") @Digits(integer = 9, fraction = 3) BigDecimal quantity,
         @NotBlank @Size(max = 16) String unit,
-        boolean required
+        @NotNull Boolean required
 ) {
 }

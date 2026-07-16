@@ -2,6 +2,7 @@ package com.osheeep.server.dinner.recipe;
 
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -30,6 +31,8 @@ import java.time.LocalDate;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -204,6 +207,21 @@ class DinnerFamilyRecipeControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(5));
         verify(draftService).replaceIngredients(7L, 101L, request);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"ingredientId\":1,\"unit\":\"克\"}",
+            "{\"ingredientId\":1,\"unit\":\"克\",\"required\":null}"
+    })
+    void ingredientRouteRequiresExplicitRequiredState(String ingredientJson) throws Exception {
+        mockMvc.perform(authenticated(put("/api/dinner/recipes/101/ingredients"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"ingredients\":[" + ingredientJson + "]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        verifyNoInteractions(draftService);
     }
 
     @Test
