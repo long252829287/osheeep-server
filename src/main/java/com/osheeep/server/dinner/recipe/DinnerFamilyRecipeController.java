@@ -4,6 +4,7 @@ import com.osheeep.server.common.api.ApiResponse;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeListItemResponse;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeTab;
+import com.osheeep.server.dinner.recipe.dto.PublishRecipeRequest;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
 import com.osheeep.server.dinner.recipe.dto.ReplaceRecipeIngredientsRequest;
 import com.osheeep.server.dinner.recipe.dto.SelectRecipeImageRequest;
@@ -27,13 +28,16 @@ public class DinnerFamilyRecipeController {
 
     private final DinnerRecipeDraftService draftService;
     private final DinnerRecipeQueryService queryService;
+    private final DinnerRecipePublicationService publicationService;
 
     public DinnerFamilyRecipeController(
             DinnerRecipeDraftService draftService,
-            DinnerRecipeQueryService queryService
+            DinnerRecipeQueryService queryService,
+            DinnerRecipePublicationService publicationService
     ) {
         this.draftService = draftService;
         this.queryService = queryService;
+        this.publicationService = publicationService;
     }
 
     @PostMapping("/drafts")
@@ -93,5 +97,14 @@ public class DinnerFamilyRecipeController {
             @Valid @RequestBody SelectRecipeImageRequest request
     ) {
         return ApiResponse.ok(draftService.selectImage(currentUser.id(), id, request));
+    }
+
+    @PostMapping("/{id}/publish")
+    public ApiResponse<RecipeDraftResponse> publish(
+            @AuthenticationPrincipal CurrentUser currentUser,
+            @PathVariable Long id,
+            @Valid @RequestBody PublishRecipeRequest request
+    ) {
+        return ApiResponse.ok(publicationService.publish(currentUser.id(), id, request.version()));
     }
 }

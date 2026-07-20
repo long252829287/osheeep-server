@@ -56,12 +56,13 @@ class DinnerFamilyRecipeControllerTest {
     @Autowired private JwtService jwtService;
     @MockitoBean private DinnerRecipeDraftService draftService;
     @MockitoBean private DinnerRecipeQueryService queryService;
+    @MockitoBean private DinnerRecipePublicationService publicationService;
 
     private String token;
 
     @BeforeEach
     void setUp() {
-        reset(draftService, queryService);
+        reset(draftService, queryService, publicationService);
         token = jwtService.generateToken(new CurrentUser(7L, "wx_user"));
     }
 
@@ -94,6 +95,11 @@ class DinnerFamilyRecipeControllerTest {
         mockMvc.perform(put("/api/dinner/recipes/101/image")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1,\"imageAssetId\":9}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
+        mockMvc.perform(post("/api/dinner/recipes/101/publish")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.errorCode").value("UNAUTHORIZED"));
     }
@@ -282,6 +288,44 @@ class DinnerFamilyRecipeControllerTest {
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
 
         verifyNoInteractions(draftService);
+    }
+
+    @Test
+    void publishRouteMapsPublicationResultsAndErrors() throws Exception {
+        when(publicationService.publish(7L, 101L, 4L)).thenReturn(
+                new RecipeDraftResponse(101L, "PUBLISHED", 5L, "番茄炒蛋", "家常菜", "酸甜",
+                        2, 15, List.of(), null, null, List.of(), null));
+        mockMvc.perform(authenticated(post("/api/dinner/recipes/101/publish"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":4}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PUBLISHED"));
+        verify(publicationService).publish(7L, 101L, 4L);
+
+        when(publicationService.publish(7L, 101L, 5L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_RECIPE_CONTENT_REJECTED));
+        mockMvc.perform(authenticated(post("/api/dinner/recipes/101/publish"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":5}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("DINNER_RECIPE_CONTENT_REJECTED"));
+
+        when(publicationService.publish(7L, 101L, 6L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_RECIPE_MODERATION_UNAVAILABLE));
+        mockMvc.perform(authenticated(post("/api/dinner/recipes/101/publish"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":6}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.errorCode").value("DINNER_RECIPE_MODERATION_UNAVAILABLE"));
+
+        when(publicationService.publish(7L, 101L, 7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT));
+        mockMvc.perform(authenticated(post("/api/dinner/recipes/101/publish"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":7}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DINNER_RECIPE_VERSION_CONFLICT"));
+
+        mockMvc.perform(authenticated(post("/api/dinner/recipes/101/publish"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
     }
 
     @Test
