@@ -25,7 +25,6 @@ import com.osheeep.server.dinner.recipe.dto.UpdateDefaultMethodRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateRecipeBasicInfoRequest;
 import com.osheeep.server.dinner.recipe.moderation.RecipeTextSafetyGateway;
 import com.osheeep.server.dinner.recipe.moderation.RecipeTextSafetyResult;
-import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.StreamSupport;
@@ -37,8 +36,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.ApplicationContextInitializer;
-import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -49,13 +46,12 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
-import org.springframework.util.StringUtils;
 
 @ActiveProfiles("local")
 @SpringBootTest
 @AutoConfigureMockMvc
 @ContextConfiguration(
-        initializers = DinnerCustomRecipeMySqlIT.DedicatedTestDatabaseInitializer.class)
+        initializers = DinnerCustomRecipeTestDatabaseSafetyInitializer.class)
 public class DinnerCustomRecipeMySqlIT {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DinnerCustomRecipeMySqlIT.class);
@@ -426,24 +422,4 @@ public class DinnerCustomRecipeMySqlIT {
                 .orElse(null);
     }
 
-    public static final class DedicatedTestDatabaseInitializer
-            implements ApplicationContextInitializer<ConfigurableApplicationContext> {
-
-        static final String FAILURE_MESSAGE =
-                "Dinner custom recipe integration test requires an explicit dedicated test database";
-
-        @Override
-        public void initialize(ConfigurableApplicationContext applicationContext) {
-            var environment = applicationContext.getEnvironment();
-            String selectedDatabase = environment.getProperty("OSHEEEP_DB_NAME");
-            String testDatabase = environment.getProperty("OSHEEEP_DB_TEST_NAME");
-            boolean localProfile = Arrays.asList(environment.getActiveProfiles()).contains("local");
-            if (!localProfile
-                    || !StringUtils.hasText(selectedDatabase)
-                    || !StringUtils.hasText(testDatabase)
-                    || !selectedDatabase.equals(testDatabase)) {
-                throw new IllegalStateException(FAILURE_MESSAGE);
-            }
-        }
-    }
 }
