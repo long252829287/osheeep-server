@@ -98,6 +98,11 @@ public class WechatRecipeTextSafetyClient implements RecipeTextSafetyGateway {
             String title,
             String content
     ) {
+
+        @Override
+        public String toString() {
+            return "CheckRequest[redacted]";
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

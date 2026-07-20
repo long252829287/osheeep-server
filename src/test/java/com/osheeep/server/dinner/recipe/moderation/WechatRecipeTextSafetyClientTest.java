@@ -17,6 +17,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.osheeep.server.auth.wechat.WechatAccessTokenProvider;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,6 +32,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
+import org.slf4j.LoggerFactory;
 
 @ExtendWith({MockitoExtension.class, OutputCaptureExtension.class})
 class WechatRecipeTextSafetyClientTest {
@@ -40,6 +44,8 @@ class WechatRecipeTextSafetyClientTest {
 
     private MockRestServiceServer server;
     private WechatRecipeTextSafetyClient client;
+    private Logger defaultRestClientLogger;
+    private Level previousDefaultRestClientLevel;
 
     @BeforeEach
     void setUp() {
@@ -47,6 +53,14 @@ class WechatRecipeTextSafetyClientTest {
         server = MockRestServiceServer.bindTo(builder).build();
         client = new WechatRecipeTextSafetyClient(
                 builder, new ObjectMapper(), tokenProvider);
+        defaultRestClientLogger = (Logger) LoggerFactory.getLogger(
+                "org.springframework.web.client.DefaultRestClient");
+        previousDefaultRestClientLevel = defaultRestClientLogger.getLevel();
+    }
+
+    @AfterEach
+    void restoreDefaultRestClientLogLevel() {
+        defaultRestClientLogger.setLevel(previousDefaultRestClientLevel);
     }
 
     @Test
@@ -168,6 +182,25 @@ class WechatRecipeTextSafetyClientTest {
         assertThat(output).doesNotContain(
                 "token-secret", "openid-secret", "title-secret",
                 "content-secret", "response-secret");
+        server.verify();
+    }
+
+    @Test
+    void debugRequestLogsDoNotExposeInspectedRecipeContent(CapturedOutput output) {
+        String openid = "openid-debug-secret";
+        String title = "title-debug-secret";
+        String checkedContent = "content-debug-secret";
+        when(tokenProvider.currentToken()).thenReturn("token-1");
+        server.expect(requestTo(CHECK_URL + "token-1"))
+                .andRespond(withSuccess(
+                        "{\"errcode\":0,\"result\":{\"suggest\":\"pass\"}}",
+                        MediaType.APPLICATION_JSON));
+
+        defaultRestClientLogger.setLevel(Level.DEBUG);
+
+        assertThat(client.check(openid, title, checkedContent))
+                .isEqualTo(RecipeTextSafetyResult.PASS);
+        assertThat(output).doesNotContain(openid, title, checkedContent);
         server.verify();
     }
 

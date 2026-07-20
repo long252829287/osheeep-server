@@ -15,10 +15,10 @@ public class RecipeModerationTextBuilder {
 
     public String build(RecipePublishSnapshot snapshot) {
         StringBuilder content = new StringBuilder()
-                .append("口味：").append(snapshot.flavor().trim())
-                .append("\n做法：").append(snapshot.defaultMethod().name().trim())
+                .append("口味：").append(trimToEmpty(snapshot.flavor()))
+                .append("\n做法：").append(trimToEmpty(snapshot.defaultMethod().name()))
                 .append("\n烹饪方式：")
-                .append(snapshot.defaultMethod().cookingStyle().trim());
+                .append(trimToEmpty(snapshot.defaultMethod().cookingStyle()));
 
         List<RecipeMethodStepResponse> steps = snapshot.defaultMethod().steps().stream()
                 .sorted(Comparator.comparingInt(RecipeMethodStepResponse::sortOrder))
@@ -27,7 +27,7 @@ public class RecipeModerationTextBuilder {
             content.append('\n')
                     .append(index + 1)
                     .append(". ")
-                    .append(steps.get(index).instruction().trim());
+                    .append(trimToEmpty(steps.get(index).instruction()));
         }
         String result = content.toString();
         requireWithinLimit(result);
@@ -39,5 +39,9 @@ public class RecipeModerationTextBuilder {
             throw new RecipeValidationException(List.of(new RecipeValidationIssue(
                     "PREVIEW", "content", "菜谱内容不能超过2500字")));
         }
+    }
+
+    private String trimToEmpty(String value) {
+        return value == null ? "" : value.trim();
     }
 }

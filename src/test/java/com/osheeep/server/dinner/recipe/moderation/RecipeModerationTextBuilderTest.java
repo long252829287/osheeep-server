@@ -37,6 +37,16 @@ class RecipeModerationTextBuilderTest {
     }
 
     @Test
+    void buildsStableTextWhenMethodLabelsAreNullOrBlank() {
+        RecipePublishSnapshot snapshot = snapshotWithMethod(new RecipeMethodResponse(
+                201L, null, "  ",
+                List.of(new RecipeMethodStepResponse("切番茄", 0))));
+
+        assertThat(builder.build(snapshot))
+                .isEqualTo("口味：酸甜\n做法：\n烹饪方式：\n1. 切番茄");
+    }
+
+    @Test
     void acceptsContentAtWechatTwoThousandFiveHundredCharacterLimit() {
         assertThatCode(() -> builder.requireWithinLimit("菜".repeat(2500)))
                 .doesNotThrowAnyException();
