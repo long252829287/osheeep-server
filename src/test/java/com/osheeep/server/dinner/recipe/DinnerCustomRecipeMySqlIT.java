@@ -34,8 +34,13 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.flyway.FlywayMigrationStrategy;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.core.env.Environment;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -52,6 +57,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 @AutoConfigureMockMvc
 @ContextConfiguration(
         initializers = DinnerCustomRecipeTestDatabaseSafetyInitializer.class)
+@Import(DinnerCustomRecipeMySqlIT.FlywaySafetyConfiguration.class)
 public class DinnerCustomRecipeMySqlIT {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DinnerCustomRecipeMySqlIT.class);
@@ -420,6 +426,18 @@ public class DinnerCustomRecipeMySqlIT {
                 .stream()
                 .findFirst()
                 .orElse(null);
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class FlywaySafetyConfiguration {
+
+        @Bean
+        FlywayMigrationStrategy dinnerCustomRecipeFlywayMigrationStrategy(
+                Environment environment
+        ) {
+            return new DinnerCustomRecipeFlywayMigrationStrategy(
+                    environment.getProperty("OSHEEEP_DB_TEST_NAME"));
+        }
     }
 
 }

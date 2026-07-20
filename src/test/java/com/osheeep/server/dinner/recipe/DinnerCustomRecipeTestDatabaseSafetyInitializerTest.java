@@ -1,8 +1,10 @@
 package com.osheeep.server.dinner.recipe;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.Properties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -18,6 +20,21 @@ class DinnerCustomRecipeTestDatabaseSafetyInitializerTest {
 
     private final DinnerCustomRecipeTestDatabaseSafetyInitializer initializer =
             new DinnerCustomRecipeTestDatabaseSafetyInitializer();
+
+    @Test
+    void connectorJDbnamePropertyOverridesTheUrlPathCatalog() throws Exception {
+        Class<?> connectionUrlType = Class.forName("com.mysql.cj.conf.ConnectionUrl");
+        Object connectionUrl = connectionUrlType
+                .getMethod("getConnectionUrlInstance", String.class, Properties.class)
+                .invoke(
+                        null,
+                        "jdbc:mysql://127.0.0.1:3306/dedicated_test_database"
+                                + "?dbname=production",
+                        new Properties());
+
+        assertThat(connectionUrlType.getMethod("getDatabase").invoke(connectionUrl))
+                .isEqualTo("production");
+    }
 
     @Test
     void rejectsAnyProfileExceptLocal() {
