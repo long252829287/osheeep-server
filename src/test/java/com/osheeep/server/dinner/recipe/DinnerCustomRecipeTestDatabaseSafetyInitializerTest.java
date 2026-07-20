@@ -4,11 +4,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.Map;
 import java.util.Properties;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.context.support.GenericApplicationContext;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.StandardEnvironment;
 import org.springframework.mock.env.MockEnvironment;
 
 class DinnerCustomRecipeTestDatabaseSafetyInitializerTest {
@@ -19,7 +24,9 @@ class DinnerCustomRecipeTestDatabaseSafetyInitializerTest {
                     + "?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia%2FShanghai";
 
     private final DinnerCustomRecipeTestDatabaseSafetyInitializer initializer =
-            new DinnerCustomRecipeTestDatabaseSafetyInitializer();
+            new DinnerCustomRecipeTestDatabaseSafetyInitializer(
+                    TEST_DATABASE,
+                    TEST_DATABASE);
 
     @Test
     void connectorJDbnamePropertyOverridesTheUrlPathCatalog() throws Exception {
@@ -60,6 +67,29 @@ class DinnerCustomRecipeTestDatabaseSafetyInitializerTest {
         }
     }
 
+    @ParameterizedTest
+    @CsvSource({
+            "'', dedicated_test_database",
+            "dedicated_test_database, ''",
+            "production, dedicated_test_database",
+            "dedicated_test_database, production"
+    })
+    void rejectsBlankOrMismatchedOriginalEnvironmentDatabaseNames(
+            String environmentSelectedDatabase,
+            String environmentTestDatabase
+    ) {
+        DinnerCustomRecipeTestDatabaseSafetyInitializer environmentBoundInitializer =
+                new DinnerCustomRecipeTestDatabaseSafetyInitializer(
+                        environmentSelectedDatabase,
+                        environmentTestDatabase);
+        try (GenericApplicationContext context = context(
+                "local", TEST_DATABASE, TEST_DATABASE, SAFE_URL, null)) {
+            assertThatThrownBy(() -> environmentBoundInitializer.initialize(context))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage(DinnerCustomRecipeTestDatabaseSafetyInitializer.FAILURE_MESSAGE);
+        }
+    }
+
     @Test
     void rejectsDatasourceOverrideWhoseParsedCatalogIsNotTheTestDatabase() {
         try (GenericApplicationContext context = context(
@@ -94,6 +124,47 @@ class DinnerCustomRecipeTestDatabaseSafetyInitializerTest {
     }
 
     @Test
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void rejectsHighPrioritySystemPropertiesThatMasqueradeAsProduction() {
+        String originalSelectedProperty = System.getProperty("OSHEEEP_DB_NAME");
+        String originalTestProperty = System.getProperty("OSHEEEP_DB_TEST_NAME");
+        String originalSelectedEnvironment = System.getenv("OSHEEEP_DB_NAME");
+        String originalTestEnvironment = System.getenv("OSHEEEP_DB_TEST_NAME");
+        String spoofDatabase = spoofDatabaseName(
+                originalSelectedEnvironment,
+                originalTestEnvironment);
+        try {
+            System.setProperty("OSHEEEP_DB_NAME", spoofDatabase);
+            System.setProperty("OSHEEEP_DB_TEST_NAME", spoofDatabase);
+
+            StandardEnvironment environment = new StandardEnvironment();
+            environment.setActiveProfiles("local");
+            environment.getPropertySources().addFirst(new MapPropertySource(
+                    "redirectedDatasource",
+                    Map.of(
+                            "spring.datasource.url",
+                            "jdbc:mysql://127.0.0.1:3306/" + spoofDatabase)));
+            try (GenericApplicationContext context = new GenericApplicationContext()) {
+                context.setEnvironment(environment);
+                assertThat(environment.getProperty("OSHEEEP_DB_NAME"))
+                        .isEqualTo(spoofDatabase);
+                assertThat(environment.getProperty("OSHEEEP_DB_TEST_NAME"))
+                        .isEqualTo(spoofDatabase);
+                assertThat(System.getenv("OSHEEEP_DB_NAME"))
+                        .isEqualTo(originalSelectedEnvironment);
+                assertThat(System.getenv("OSHEEEP_DB_TEST_NAME"))
+                        .isEqualTo(originalTestEnvironment);
+                assertRejected(
+                        new DinnerCustomRecipeTestDatabaseSafetyInitializer(),
+                        context);
+            }
+        } finally {
+            restoreSystemProperty("OSHEEEP_DB_NAME", originalSelectedProperty);
+            restoreSystemProperty("OSHEEEP_DB_TEST_NAME", originalTestProperty);
+        }
+    }
+
+    @Test
     void acceptsExactPercentDecodedDatasourceCatalogWithQueryParameters() {
         try (GenericApplicationContext context = context(
                 "local", TEST_DATABASE, TEST_DATABASE, SAFE_URL, null)) {
@@ -102,7 +173,14 @@ class DinnerCustomRecipeTestDatabaseSafetyInitializerTest {
     }
 
     private void assertRejected(GenericApplicationContext context) {
-        assertThatThrownBy(() -> initializer.initialize(context))
+        assertRejected(initializer, context);
+    }
+
+    private void assertRejected(
+            DinnerCustomRecipeTestDatabaseSafetyInitializer initializerUnderTest,
+            GenericApplicationContext context
+    ) {
+        assertThatThrownBy(() -> initializerUnderTest.initialize(context))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage(DinnerCustomRecipeTestDatabaseSafetyInitializer.FAILURE_MESSAGE);
     }
@@ -125,5 +203,21 @@ class DinnerCustomRecipeTestDatabaseSafetyInitializerTest {
         GenericApplicationContext context = new GenericApplicationContext();
         context.setEnvironment(environment);
         return context;
+    }
+
+    private void restoreSystemProperty(String name, String value) {
+        if (value == null) {
+            System.clearProperty(name);
+        } else {
+            System.setProperty(name, value);
+        }
+    }
+
+    private String spoofDatabaseName(String... rawDatabaseNames) {
+        String spoof = "production";
+        while (java.util.Arrays.asList(rawDatabaseNames).contains(spoof)) {
+            spoof += "_redirected";
+        }
+        return spoof;
     }
 }

@@ -1,5 +1,6 @@
 package com.osheeep.server.dinner.recipe;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
@@ -15,6 +16,10 @@ import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.configuration.Configuration;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
+import org.springframework.boot.autoconfigure.flyway.FlywayMigrationStrategy;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 class DinnerCustomRecipeFlywayMigrationStrategyTest {
 
@@ -59,6 +64,47 @@ class DinnerCustomRecipeFlywayMigrationStrategyTest {
         verify(fixture.flyway(), never()).migrate();
     }
 
+    @Test
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void systemPropertyMasqueradeIsRejectedBeforeFlywayMigrate() throws Exception {
+        String originalSelectedProperty = System.getProperty("OSHEEEP_DB_NAME");
+        String originalTestProperty = System.getProperty("OSHEEEP_DB_TEST_NAME");
+        String originalSelectedEnvironment = System.getenv("OSHEEEP_DB_NAME");
+        String originalTestEnvironment = System.getenv("OSHEEEP_DB_TEST_NAME");
+        String spoofDatabase = spoofDatabaseName(
+                originalSelectedEnvironment,
+                originalTestEnvironment);
+        try {
+            System.setProperty("OSHEEEP_DB_NAME", spoofDatabase);
+            System.setProperty("OSHEEEP_DB_TEST_NAME", spoofDatabase);
+            FlywayFixture fixture = flywayUsingCatalog(spoofDatabase);
+
+            try (AnnotationConfigApplicationContext context =
+                    new AnnotationConfigApplicationContext()) {
+                context.register(DinnerCustomRecipeMySqlIT.FlywaySafetyConfiguration.class);
+                context.refresh();
+                FlywayMigrationStrategy strategy =
+                        context.getBean(FlywayMigrationStrategy.class);
+
+                assertThat(context.getEnvironment().getProperty("OSHEEEP_DB_NAME"))
+                        .isEqualTo(spoofDatabase);
+                assertThat(context.getEnvironment().getProperty("OSHEEEP_DB_TEST_NAME"))
+                        .isEqualTo(spoofDatabase);
+                assertThat(System.getenv("OSHEEEP_DB_NAME"))
+                        .isEqualTo(originalSelectedEnvironment);
+                assertThat(System.getenv("OSHEEEP_DB_TEST_NAME"))
+                        .isEqualTo(originalTestEnvironment);
+                assertThatThrownBy(() -> strategy.migrate(fixture.flyway()))
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessage(DinnerCustomRecipeFlywayMigrationStrategy.FAILURE_MESSAGE);
+                verify(fixture.flyway(), never()).migrate();
+            }
+        } finally {
+            restoreSystemProperty("OSHEEEP_DB_NAME", originalSelectedProperty);
+            restoreSystemProperty("OSHEEEP_DB_TEST_NAME", originalTestProperty);
+        }
+    }
+
     private FlywayFixture flywayUsingCatalog(String actualCatalog) throws Exception {
         Flyway flyway = mock(Flyway.class);
         Configuration configuration = mock(Configuration.class);
@@ -80,5 +126,21 @@ class DinnerCustomRecipeFlywayMigrationStrategyTest {
     }
 
     private record FlywayFixture(Flyway flyway, Configuration configuration) {
+    }
+
+    private void restoreSystemProperty(String name, String value) {
+        if (value == null) {
+            System.clearProperty(name);
+        } else {
+            System.setProperty(name, value);
+        }
+    }
+
+    private String spoofDatabaseName(String... rawDatabaseNames) {
+        String spoof = "production";
+        while (java.util.Arrays.asList(rawDatabaseNames).contains(spoof)) {
+            spoof += "_redirected";
+        }
+        return spoof;
     }
 }

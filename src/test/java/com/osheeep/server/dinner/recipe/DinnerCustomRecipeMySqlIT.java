@@ -40,7 +40,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.core.env.Environment;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -432,11 +431,9 @@ public class DinnerCustomRecipeMySqlIT {
     static class FlywaySafetyConfiguration {
 
         @Bean
-        FlywayMigrationStrategy dinnerCustomRecipeFlywayMigrationStrategy(
-                Environment environment
-        ) {
+        FlywayMigrationStrategy dinnerCustomRecipeFlywayMigrationStrategy() {
             return new DinnerCustomRecipeFlywayMigrationStrategy(
-                    environment.getProperty("OSHEEEP_DB_TEST_NAME"));
+                    System.getenv("OSHEEEP_DB_TEST_NAME"));
         }
     }
 

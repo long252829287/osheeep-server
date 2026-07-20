@@ -14,6 +14,23 @@ public final class DinnerCustomRecipeTestDatabaseSafetyInitializer
     static final String FAILURE_MESSAGE =
             "Dinner custom recipe integration test requires an explicit dedicated test database";
 
+    private final String environmentSelectedDatabase;
+    private final String environmentTestDatabase;
+
+    public DinnerCustomRecipeTestDatabaseSafetyInitializer() {
+        this(
+                System.getenv("OSHEEEP_DB_NAME"),
+                System.getenv("OSHEEEP_DB_TEST_NAME"));
+    }
+
+    DinnerCustomRecipeTestDatabaseSafetyInitializer(
+            String environmentSelectedDatabase,
+            String environmentTestDatabase
+    ) {
+        this.environmentSelectedDatabase = environmentSelectedDatabase;
+        this.environmentTestDatabase = environmentTestDatabase;
+    }
+
     @Override
     public void initialize(ConfigurableApplicationContext applicationContext) {
         requireDedicatedDatabase(applicationContext.getEnvironment());
@@ -30,7 +47,11 @@ public final class DinnerCustomRecipeTestDatabaseSafetyInitializer
         if (!localProfile
                 || !StringUtils.hasText(selectedDatabase)
                 || !StringUtils.hasText(testDatabase)
+                || !StringUtils.hasText(environmentSelectedDatabase)
+                || !StringUtils.hasText(environmentTestDatabase)
                 || !selectedDatabase.equals(testDatabase)
+                || !selectedDatabase.equals(environmentSelectedDatabase)
+                || !selectedDatabase.equals(environmentTestDatabase)
                 || !testDatabase.equals(datasourceCatalog)
                 || StringUtils.hasText(flywayUrl)) {
             throw new IllegalStateException(FAILURE_MESSAGE);
