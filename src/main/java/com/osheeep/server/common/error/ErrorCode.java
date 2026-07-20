@@ -22,6 +22,11 @@ public enum ErrorCode {
             HttpStatus.UNPROCESSABLE_ENTITY, "Dinner recipe is incomplete"),
     DINNER_RECIPE_IMAGE_INVALID(
             HttpStatus.UNPROCESSABLE_ENTITY, "Dinner recipe image is unavailable"),
+    DINNER_RECIPE_CONTENT_REJECTED(
+            HttpStatus.UNPROCESSABLE_ENTITY, "Dinner recipe content was rejected"),
+    DINNER_RECIPE_MODERATION_UNAVAILABLE(
+            HttpStatus.SERVICE_UNAVAILABLE,
+            "Dinner recipe moderation is temporarily unavailable"),
     DINNER_RECIPE_INVALID(HttpStatus.BAD_REQUEST, "Dinner recipe is invalid"),
     DINNER_INGREDIENT_INVALID(HttpStatus.BAD_REQUEST, "Dinner ingredient is invalid"),
     DINNER_INVENTORY_VERSION_CONFLICT(
