@@ -44,6 +44,18 @@ public class DinnerRecipeAuthorizer {
         return new RecipeAccess(userId, membership.getHouseholdId());
     }
 
+    public RecipeAccess requireMembershipForUpdate(Long userId) {
+        DinnerHouseholdMemberEntity membership = memberMapper.selectByUserIdForUpdate(userId);
+        if (membership == null) {
+            throw forbidden();
+        }
+        DinnerHouseholdEntity household = householdMapper.selectByIdForUpdate(membership.getHouseholdId());
+        if (household == null || !"ACTIVE".equals(household.getStatus())) {
+            throw forbidden();
+        }
+        return new RecipeAccess(userId, membership.getHouseholdId());
+    }
+
     public DinnerRecipeEntity requireOwnedDraft(Long userId, Long recipeId) {
         requireMembership(userId);
         DinnerRecipeEntity recipe = recipeMapper.selectById(recipeId);

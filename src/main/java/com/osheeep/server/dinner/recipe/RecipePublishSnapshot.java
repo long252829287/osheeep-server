@@ -19,4 +19,13 @@ public record RecipePublishSnapshot(
         RecipeMethodResponse defaultMethod,
         String moderationText
 ) {
+
+    public RecipePublishSnapshot {
+        ingredients = ingredients == null ? null : List.copyOf(ingredients);
+        if (defaultMethod != null && defaultMethod.steps() != null) {
+            defaultMethod = new RecipeMethodResponse(
+                    defaultMethod.id(), defaultMethod.name(), defaultMethod.cookingStyle(),
+                    List.copyOf(defaultMethod.steps()));
+        }
+    }
 }

@@ -24,6 +24,7 @@ import com.osheeep.server.dinner.recipe.dto.RecipeIngredientInput;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepInput;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepResponse;
+import com.osheeep.server.dinner.recipe.dto.RecipeValidationIssue;
 import com.osheeep.server.dinner.recipe.dto.ReplaceRecipeIngredientsRequest;
 import com.osheeep.server.dinner.recipe.dto.SelectRecipeImageRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateDefaultMethodRequest;
@@ -326,6 +327,14 @@ class DinnerFamilyRecipeControllerTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        when(publicationService.publish(7L, 101L, 8L))
+                .thenThrow(new RecipeValidationException(List.of(
+                        new RecipeValidationIssue("METHOD", "steps", "至少添加一个做法步骤"))));
+        mockMvc.perform(authenticated(post("/api/dinner/recipes/101/publish"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":8}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("DINNER_RECIPE_VALIDATION_FAILED"));
     }
 
     @Test

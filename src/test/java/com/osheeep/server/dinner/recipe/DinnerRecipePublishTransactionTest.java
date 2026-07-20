@@ -38,7 +38,7 @@ class DinnerRecipePublishTransactionTest {
     void checkedVersionIsLockedRevalidatedAndPublished() {
         DinnerRecipePublishTransaction transaction = transaction();
         DinnerRecipeEntity locked = completeDraft(4L);
-        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(locked);
         when(queryService.detail(7L, 101L)).thenReturn(completeResponse(), publishedResponse());
 
@@ -55,13 +55,25 @@ class DinnerRecipePublishTransactionTest {
     @Test
     void versionChangedDuringModerationPreservesDraftAndReturnsConflict() {
         DinnerRecipePublishTransaction transaction = transaction();
-        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(completeDraft(5L));
 
         assertThatThrownBy(() -> transaction.publishChecked(7L, 101L, 4L))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.errorCode())
                                 .isEqualTo(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT));
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+    }
+
+    @Test
+    void membershipChangedDuringModerationRejectsLockedOldHouseholdWithoutUpdate() {
+        DinnerRecipePublishTransaction transaction = transaction();
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(completeDraft(4L));
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 71L));
+
+        assertThatThrownBy(() -> transaction.publishChecked(7L, 101L, 4L))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
         verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
     }
 

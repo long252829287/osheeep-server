@@ -32,7 +32,11 @@ public class DinnerRecipePublishSnapshotLoader {
     }
 
     public RecipePublishSnapshot loadForModeration(Long userId, Long recipeId, long expectedVersion) {
+        DinnerRecipeAuthorizer.RecipeAccess activeMembership = authorizer.requireMembership(userId);
         var recipe = authorizer.requireOwnedDraft(userId, recipeId);
+        if (!Objects.equals(activeMembership.householdId(), recipe.getHouseholdId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
         if (!Objects.equals(recipe.getVersion(), expectedVersion)) {
             throw new BusinessException(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT);
         }

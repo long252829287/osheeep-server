@@ -39,10 +39,13 @@ public class DinnerRecipePublishTransaction {
     @Transactional
     public RecipeDraftResponse publishChecked(Long userId, Long recipeId, long expectedVersion) {
         try {
-            authorizer.requireMembership(userId);
             DinnerRecipeEntity draft = recipeMapper.selectByIdForUpdate(recipeId);
             if (draft == null) {
                 throw new BusinessException(ErrorCode.DINNER_RECIPE_NOT_FOUND);
+            }
+            var membership = authorizer.requireMembershipForUpdate(userId);
+            if (!Objects.equals(membership.householdId(), draft.getHouseholdId())) {
+                throw new BusinessException(ErrorCode.FORBIDDEN);
             }
             if (!"DRAFT".equals(draft.getStatus()) || !Objects.equals(userId, draft.getCreatorId())) {
                 throw new BusinessException(ErrorCode.FORBIDDEN);
@@ -56,8 +59,9 @@ public class DinnerRecipePublishTransaction {
                     detail.name(), detail.category(), detail.flavor(), detail.servings(),
                     detail.estimatedMinutes(), draft.getImageAssetId(), detail.ingredients(),
                     detail.defaultMethod(), null);
-            if (!validator.validate(snapshot).isEmpty()) {
-                throw new RecipeValidationException(validator.validate(snapshot));
+            var issues = validator.validate(snapshot);
+            if (!issues.isEmpty()) {
+                throw new RecipeValidationException(issues);
             }
             imageAssetService.requireApproved(draft.getImageAssetId());
             draft.setStatus("PUBLISHED");
