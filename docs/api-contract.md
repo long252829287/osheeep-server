@@ -16,7 +16,7 @@ All `/api/**` endpoints return this shape:
 }
 ```
 
-For failures, `success` is `false`, `data` is omitted, and `errorCode` is one of the documented common or business-specific codes. Successful responses with no data also omit `data`.
+For failures, `success` is `false` and `errorCode` is one of the documented common or business-specific codes. `data` is normally omitted; `DINNER_RECIPE_VALIDATION_FAILED` uses it for structured field issues. Successful responses with no data also omit `data`.
 
 ## Authentication
 
@@ -26,6 +26,7 @@ Public endpoints:
 - `POST /api/auth/login`
 - `POST /api/auth/wechat`
 - `GET /actuator/health`
+- `GET /media/recipes/**` (read-only, self-hosted approved recipe derivatives)
 - `GET /swagger-ui.html`
 - `GET /v3/api-docs`
 
@@ -44,6 +45,7 @@ Authorization: Bearer <accessToken>
 | POST   | `/api/auth/wechat`   | `code` from `wx.login`                                  | Login response |
 | POST   | `/api/auth/logout`   | None                                                    | `null`         |
 | GET    | `/api/users/me`      | None                                                    | User profile   |
+| POST   | `/api/users/me/deletion` | WeChat login `code` for identity re-verification    | `null`         |
 
 Login response data:
 
@@ -122,6 +124,116 @@ Each recipe retains the original fields `id`, `name`, `imagePath`, `category`, `
 Only required ingredients contribute to matching. Missing stock, insufficient known quantity, or a unit mismatch is `MISSING`. When matching-unit stock is present, a `null` recipe requirement quantity, a `null` stock quantity, or both contributes to `matchedRequired` but produces `UNKNOWN_QUANTITY` and lists the ingredient in `unknownQuantityIngredients`. Complete required stock with both quantities known is `AVAILABLE`. Optional ingredients remain ignored. A recipe with only optional ingredients, or otherwise zero required ingredients, is `AVAILABLE` with `matchedRequired: 0`, `totalRequired: 0`, `matchPercent: 100`, `missingIngredients: []`, and `unknownQuantityIngredients: []`. Recipes are ordered by status (`AVAILABLE`, `UNKNOWN_QUANTITY`, `MISSING`), then descending `matchPercent`, ascending `estimatedMinutes` with unknown duration last, and finally ascending recipe ID.
 
 This is backward compatible for existing recipe consumers: `GET /api/dinner/recipes` remains the same authenticated route, all query parameters default to the old no-filter call, and no original recipe response field was removed. Existing tonight-menu selection and record endpoints and payloads are unchanged.
+
+## Household Custom Recipe Vertical Slice
+
+Flyway migration `V6__add_household_custom_recipes.sql` evolves recipes into versioned `DRAFT`, `PUBLISHED`, and `ARCHIVED` aggregates, adds one default method with ordered steps, and adds traceable image assets. Existing system recipes are migrated from `ACTIVE` to `PUBLISHED`; existing discovery and tonight-menu contracts continue to accept those system rows. V6 in source or a local test catalog does not imply that the migration has been applied to production.
+
+On 2026-07-20, the explicit guarded `DinnerCustomRecipeMySqlIT` run passed 1/1 on the dedicated local MySQL 8.0 catalog. Flyway validated all six source migrations; that catalog started at schema version 4, so this run applied V5 and V6 and finished at version 6. This is not evidence of a fresh V1-V6 migration, a production migration, deployment, or release. Ordinary `mvn test` does not select `*IT`; this evidence requires the explicit `-Dtest=DinnerCustomRecipeMySqlIT -Dspring.profiles.active=local` command and both dedicated-catalog safety gates.
+
+All `/api/dinner/**` routes below require a bearer token. `GET /media/recipes/**` is the only public route in this feature and serves read-only derivatives bundled under the application's own origin.
+
+| Method | Path                                      | Request                                  | Response data                         |
+| ------ | ----------------------------------------- | ---------------------------------------- | ------------------------------------- |
+| POST   | `/api/dinner/recipes/drafts`              | None                                     | New aggregate draft                   |
+| GET    | `/api/dinner/recipes/family`              | Required `tab` query parameter           | Family recipe list                    |
+| GET    | `/api/dinner/recipes/{id}`                | None                                     | Full visible recipe aggregate         |
+| PUT    | `/api/dinner/recipes/{id}/basic-info`     | Versioned basic-info body                | Updated aggregate draft               |
+| PUT    | `/api/dinner/recipes/{id}/ingredients`    | Versioned ingredient replacement         | Updated aggregate draft               |
+| PUT    | `/api/dinner/recipes/{id}/default-method` | Versioned default-method replacement     | Updated aggregate draft               |
+| PUT    | `/api/dinner/recipes/{id}/image`          | `version`, nullable `imageAssetId`        | Updated aggregate draft               |
+| POST   | `/api/dinner/recipes/{id}/publish`        | `version`                                | Published aggregate                   |
+| GET    | `/api/dinner/image-assets`                | Optional `query` query parameter          | Approved image metadata array         |
+
+`tab` is exactly `PUBLISHED`, `DRAFT`, or `ARCHIVED`. Draft lists contain only the current user's drafts. Published and archived lists are scoped to the current active household. A draft is visible only to its creator; before publication, the other member receives HTTP 403 even when both users belong to the same household. A published or archived recipe is visible to either active member of that household. The server derives user and household IDs from the bearer token and never trusts either value from a request body.
+
+Creating a draft returns version `1`. Every successful basic-info, ingredient, default-method, or image write increments the aggregate version exactly once. Publication also increments once; for example, the first complete vertical slice progresses `1` (created), `2` (basic), `3` (ingredients), `4` (method), `5` (image), `6` (published). Every write must supply the exact current version. A stale version returns HTTP 409, `DINNER_RECIPE_VERSION_CONFLICT`, with message `Dinner recipe was updated elsewhere`; the server does not replay the write.
+
+Basic-info body:
+
+```json
+{
+  "version": 1,
+  "name": "番茄炒蛋",
+  "category": "家常菜",
+  "flavor": "酸甜",
+  "servings": 2,
+  "estimatedMinutes": 15
+}
+```
+
+Draft saves may remain incomplete. Nonblank publish values are limited to: name 40 characters; category and flavor 16 each; servings 1-20; estimated time 1-1440 minutes. Blank basic strings are stored as absent.
+
+Ingredient replacement body:
+
+```json
+{
+  "version": 2,
+  "ingredients": [
+    {
+      "ingredientId": 1,
+      "quantity": null,
+      "unit": "克",
+      "required": true
+    }
+  ]
+}
+```
+
+The array replaces the entire step in request order and may contain at most 50 distinct, currently visible ingredients. `unit` is required and limited to 16 characters. `required` must be present. `quantity` may be `null`, meaning “适量”; otherwise it is nonnegative with at most 9 integer digits and 3 fractional digits. Publication requires at least one required ingredient.
+
+Default-method replacement body:
+
+```json
+{
+  "version": 3,
+  "name": "家常炒",
+  "cookingStyle": "炒",
+  "steps": [
+    { "instruction": "切好食材" },
+    { "instruction": "热锅翻炒至熟" }
+  ]
+}
+```
+
+The body replaces the single default method and all its steps in request order. Method name is limited to 40 characters, cooking style to 32, and the array to 12 steps. Incomplete step text may be saved in a draft; publication requires 1-12 nonblank steps, each at most 160 characters.
+
+A recipe aggregate response contains `id`, `status`, `version`, nullable basic fields, `ingredients`, nullable `defaultMethod`, nullable `image`, `incompleteSteps`, and ISO-8601 `updatedAt`. Ingredient items contain `ingredientId`, `name`, nullable `quantity`, `unit`, `required`, and zero-based `sortOrder`. The default method contains `id`, `name`, `cookingStyle`, and ordered `{instruction, sortOrder}` items.
+
+Family list items contain `id`, `status`, nullable `name` and `imageUrl`, basic fields, `version`, creator and last-modifier IDs/names, `completedStep`, and `updatedAt`. List order is `updatedAt` descending, then recipe ID descending.
+
+Image search returns only `APPROVED` assets. A response item exposes:
+
+- `id`, `displayName`, self-hosted `listUrl` and `detailUrl`;
+- `sourcePageUrl`, `author`, `licenseName`, `licenseUrl`, and `acquiredOn`;
+- original `width` and `height`.
+
+It never exposes the stored original object key or the third-party original-file URL, and the service never proxies a search result or hotlinks it at runtime. Selecting a missing or no-longer-approved asset returns HTTP 422 with `DINNER_RECIPE_IMAGE_INVALID`. Passing `imageAssetId: null` clears a draft's selection. Publication requires an approved asset.
+
+Publication first loads and validates an immutable snapshot. Validation failures return HTTP 422 with `DINNER_RECIPE_VALIDATION_FAILED`; unlike ordinary errors, `data` is an ordered array of objects with stable `step`, `field`, and user-facing `message` values, for example:
+
+```json
+{
+  "success": false,
+  "errorCode": "DINNER_RECIPE_VALIDATION_FAILED",
+  "message": "Dinner recipe is incomplete",
+  "data": [
+    { "step": "BASIC", "field": "name", "message": "请填写菜名" },
+    {
+      "step": "IMAGE",
+      "field": "imageAssetId",
+      "message": "请选择一张已审核真实图片"
+    }
+  ],
+  "requestId": "..."
+}
+```
+
+The normalized moderation content contains flavor, method name, cooking style, and ordered steps and may not exceed 2500 characters. The service looks up the publishing user's server-side WeChat identity: its `openid` must belong to that active mini-program user and is never accepted from the client. It calls WeChat `msgSecCheck` 2.0 with `scene=3` outside a database transaction. Only `result.suggest=pass` continues. `review` or `risky` returns HTTP 422 with `DINNER_RECIPE_CONTENT_REJECTED`; missing identity, missing configuration, platform error, timeout, or retry exhaustion returns HTTP 503 with `DINNER_RECIPE_MODERATION_UNAVAILABLE`. In every failure case the draft remains a draft.
+
+After moderation passes, a short transaction re-locks the recipe and active household membership, revalidates the same expected version, completeness, and approved image, then atomically sets `PUBLISHED`, `publishedAt`, last modifier, and the next version. A change during moderation therefore returns the same 409 conflict instead of publishing stale text.
+
+This vertical slice intentionally does not add household recipes to discovery or tonight-menu selection. Editing a published recipe through a revision draft, method variants, copying system recipes, and archiving are also outside these endpoints even though V6 reserves model fields/statuses for later work.
 
 ## Dinner Menu And Records
 
