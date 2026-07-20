@@ -2,6 +2,7 @@ package com.osheeep.server.dinner.recipe;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -68,6 +69,50 @@ class DinnerRecipePublishSnapshotLoaderTest {
     }
 
     @Test
+    void incompleteDraftStopsBeforeImageAndModerationTextWork() {
+        DinnerRecipePublishSnapshotLoader loader = loader();
+        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
+        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 4L));
+        when(queryService.detail(7L, 101L)).thenReturn(incompleteDetail());
+
+        assertThatThrownBy(() -> loader.loadForModeration(7L, 101L, 4L))
+                .isInstanceOf(RecipeValidationException.class);
+
+        verify(imageAssetService, never()).requireApproved(9L);
+    }
+
+    @Test
+    void unapprovedImageStopsBeforeModerationTextWork() {
+        RecipeModerationTextBuilder textBuilder = org.mockito.Mockito.mock(RecipeModerationTextBuilder.class);
+        DinnerRecipePublishSnapshotLoader loader = loader(textBuilder);
+        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
+        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 4L));
+        when(queryService.detail(7L, 101L)).thenReturn(completeDetail());
+        when(imageAssetService.requireApproved(9L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_RECIPE_IMAGE_INVALID));
+
+        assertThatThrownBy(() -> loader.loadForModeration(7L, 101L, 4L))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_IMAGE_INVALID));
+
+        verify(textBuilder, never()).build(any());
+    }
+
+    @Test
+    void moderationTextLimitFailureIsReturnedAsValidationFailure() {
+        DinnerRecipePublishSnapshotLoader loader = loader();
+        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
+        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 4L));
+        when(queryService.detail(7L, 101L)).thenReturn(detailWithLongMethodName());
+
+        assertThatThrownBy(() -> loader.loadForModeration(7L, 101L, 4L))
+                .isInstanceOf(RecipeValidationException.class);
+
+        verify(imageAssetService).requireApproved(9L);
+    }
+
+    @Test
     void snapshotDefensivelyCopiesIngredientsAndMethodSteps() {
         List<RecipeIngredientResponse> ingredients = new ArrayList<>();
         List<RecipeMethodStepResponse> steps = new ArrayList<>();
@@ -79,11 +124,22 @@ class DinnerRecipePublishSnapshotLoaderTest {
         steps.add(new RecipeMethodStepResponse("炒鸡蛋", 1));
         assertThat(snapshot.ingredients()).isEmpty();
         assertThat(snapshot.defaultMethod().steps()).hasSize(1);
+        assertThatThrownBy(() -> snapshot.ingredients().add(null))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> snapshot.defaultMethod().steps().add(null))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(new RecipePublishSnapshot(101L, 7L, 70L, 4L,
+                "番茄炒蛋", "家常菜", "酸甜", 2, 15, 9L, null, null, null)
+                .ingredients()).isNull();
     }
 
     private DinnerRecipePublishSnapshotLoader loader() {
+        return loader(new RecipeModerationTextBuilder());
+    }
+
+    private DinnerRecipePublishSnapshotLoader loader(RecipeModerationTextBuilder textBuilder) {
         return new DinnerRecipePublishSnapshotLoader(authorizer, queryService, new RecipeDraftValidator(),
-                new RecipeModerationTextBuilder(), imageAssetService);
+                textBuilder, imageAssetService);
     }
 
     private DinnerRecipeEntity draft(long householdId, long version) {
@@ -97,6 +153,19 @@ class DinnerRecipePublishSnapshotLoaderTest {
         return new RecipeDraftResponse(101L, "DRAFT", 4L, "番茄炒蛋", "家常菜", "酸甜", 2, 15,
                 List.of(new RecipeIngredientResponse(1L, "番茄", BigDecimal.ONE, "个", true, 0)),
                 new RecipeMethodResponse(201L, "家常炒", "炒",
+                        List.of(new RecipeMethodStepResponse("切番茄", 0))),
+                null, List.of(), null);
+    }
+
+    private RecipeDraftResponse incompleteDetail() {
+        return new RecipeDraftResponse(101L, "DRAFT", 4L, null, null, null, null, null,
+                List.of(), null, null, List.of("BASIC", "INGREDIENTS", "METHOD", "IMAGE"), null);
+    }
+
+    private RecipeDraftResponse detailWithLongMethodName() {
+        return new RecipeDraftResponse(101L, "DRAFT", 4L, "番茄炒蛋", "家常菜", "酸甜", 2, 15,
+                List.of(new RecipeIngredientResponse(1L, "番茄", BigDecimal.ONE, "个", true, 0)),
+                new RecipeMethodResponse(201L, "做法" + "x".repeat(2500), "炒",
                         List.of(new RecipeMethodStepResponse("切番茄", 0))),
                 null, List.of(), null);
     }

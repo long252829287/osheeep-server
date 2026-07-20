@@ -141,6 +141,32 @@ class DinnerRecipeDraftServiceTest {
     }
 
     @Test
+    void ownedDraftAuthorizationRejectsTheOwnersDraftFromAnotherHousehold() {
+        when(memberMapper.selectOne(any())).thenReturn(member(7L, 70L));
+        when(householdMapper.selectById(70L)).thenReturn(household(70L, "ACTIVE"));
+        DinnerRecipeEntity oldHouseholdDraft = recipe(101L, 7L, "DRAFT");
+        oldHouseholdDraft.setHouseholdId(71L);
+        when(recipeMapper.selectById(101L)).thenReturn(oldHouseholdDraft);
+
+        assertThatThrownBy(() -> authorizer.requireOwnedDraft(7L, 101L))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+    }
+
+    @Test
+    void draftVisibilityRejectsTheOwnersDraftFromAnotherHousehold() {
+        when(memberMapper.selectOne(any())).thenReturn(member(7L, 70L));
+        when(householdMapper.selectById(70L)).thenReturn(household(70L, "ACTIVE"));
+        DinnerRecipeEntity oldHouseholdDraft = recipe(101L, 7L, "DRAFT");
+        oldHouseholdDraft.setHouseholdId(71L);
+        when(recipeMapper.selectById(101L)).thenReturn(oldHouseholdDraft);
+
+        assertThatThrownBy(() -> authorizer.requireVisible(7L, 101L))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+    }
+
+    @Test
     void basicInfoSaveLocksExpectedVersionNormalizesTextAndIncrementsOnce() {
         DinnerRecipeEntity draft = draft(101L, 7L, 70L, 3L);
         DinnerRecipeMethodEntity method = defaultMethod(201L, 101L, 8);

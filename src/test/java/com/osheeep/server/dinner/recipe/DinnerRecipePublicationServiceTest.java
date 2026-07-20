@@ -64,6 +64,53 @@ class DinnerRecipePublicationServiceTest {
         verifyNoInteractions(transaction);
     }
 
+    @Test
+    void missingWechatIdentityLeavesGatewayAndTransactionUntouched() {
+        DinnerRecipePublicationService service = new DinnerRecipePublicationService(
+                snapshotLoader, identityMapper, gateway, transaction);
+        when(snapshotLoader.loadForModeration(7L, 101L, 4L)).thenReturn(completeSnapshot());
+        when(identityMapper.selectOne(any())).thenReturn(null);
+
+        assertModerationUnavailable(() -> service.publish(7L, 101L, 4L));
+
+        verifyNoInteractions(gateway, transaction);
+    }
+
+    @Test
+    void identityWithoutOpenidLeavesGatewayAndTransactionUntouched() {
+        DinnerRecipePublicationService service = new DinnerRecipePublicationService(
+                snapshotLoader, identityMapper, gateway, transaction);
+        when(snapshotLoader.loadForModeration(7L, 101L, 4L)).thenReturn(completeSnapshot());
+        WechatUserIdentityEntity identity = identity();
+        identity.setOpenid(null);
+        when(identityMapper.selectOne(any())).thenReturn(identity);
+
+        assertModerationUnavailable(() -> service.publish(7L, 101L, 4L));
+
+        verifyNoInteractions(gateway, transaction);
+    }
+
+    @Test
+    void blankOpenidLeavesGatewayAndTransactionUntouched() {
+        DinnerRecipePublicationService service = new DinnerRecipePublicationService(
+                snapshotLoader, identityMapper, gateway, transaction);
+        when(snapshotLoader.loadForModeration(7L, 101L, 4L)).thenReturn(completeSnapshot());
+        WechatUserIdentityEntity identity = identity();
+        identity.setOpenid("  ");
+        when(identityMapper.selectOne(any())).thenReturn(identity);
+
+        assertModerationUnavailable(() -> service.publish(7L, 101L, 4L));
+
+        verifyNoInteractions(gateway, transaction);
+    }
+
+    private void assertModerationUnavailable(org.assertj.core.api.ThrowableAssert.ThrowingCallable call) {
+        assertThatThrownBy(call)
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_MODERATION_UNAVAILABLE));
+    }
+
     private RecipePublishSnapshot completeSnapshot() {
         return new RecipePublishSnapshot(101L, 7L, 70L, 4L, "番茄炒蛋", "家常菜", "酸甜",
                 2, 15, 9L, List.of(), null, "审核文本");

@@ -57,11 +57,12 @@ public class DinnerRecipeAuthorizer {
     }
 
     public DinnerRecipeEntity requireOwnedDraft(Long userId, Long recipeId) {
-        requireMembership(userId);
+        RecipeAccess access = requireMembership(userId);
         DinnerRecipeEntity recipe = recipeMapper.selectById(recipeId);
         if (recipe == null
                 || !"DRAFT".equals(recipe.getStatus())
-                || !Objects.equals(userId, recipe.getCreatorId())) {
+                || !Objects.equals(userId, recipe.getCreatorId())
+                || !Objects.equals(access.householdId(), recipe.getHouseholdId())) {
             throw forbidden();
         }
         return recipe;
@@ -74,7 +75,8 @@ public class DinnerRecipeAuthorizer {
             throw forbidden();
         }
         boolean visible = switch (recipe.getStatus()) {
-            case "DRAFT" -> Objects.equals(userId, recipe.getCreatorId());
+            case "DRAFT" -> Objects.equals(userId, recipe.getCreatorId())
+                    && Objects.equals(access.householdId(), recipe.getHouseholdId());
             case "PUBLISHED", "ARCHIVED" ->
                     Objects.equals(access.householdId(), recipe.getHouseholdId());
             default -> false;
