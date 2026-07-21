@@ -144,6 +144,9 @@ public class DinnerRecordService {
                         .eq(DinnerMenuSelectionEntity::getMenuId, menu.getId()));
         List<DinnerRecordSnapshotAssembler.SnapshotDraft> snapshotDrafts =
                 snapshotAssembler.assemble(household.getId(), selections);
+        List<EncodedSnapshotDraft> encodedSnapshotDrafts = snapshotDrafts.stream()
+                .map(this::encodeSnapshotDraft)
+                .toList();
 
         LocalDateTime now = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
         DinnerCookingRecordEntity record = new DinnerCookingRecordEntity();
@@ -163,7 +166,8 @@ public class DinnerRecordService {
         }
 
         int sortOrder = 0;
-        for (DinnerRecordSnapshotAssembler.SnapshotDraft draft : snapshotDrafts) {
+        for (EncodedSnapshotDraft encoded : encodedSnapshotDrafts) {
+            DinnerRecordSnapshotAssembler.SnapshotDraft draft = encoded.draft();
             DinnerRecordDishSnapshotEntity snapshot = new DinnerRecordDishSnapshotEntity();
             snapshot.setRecordId(record.getId());
             snapshot.setRecipeId(draft.recipeId());
@@ -178,9 +182,9 @@ public class DinnerRecordService {
             snapshot.setMethodId(draft.methodId());
             snapshot.setMethodName(draft.methodName());
             snapshot.setCookingStyle(draft.cookingStyle());
-            snapshot.setMethodStepsJson(snapshotJsonCodec.writeSteps(draft.steps()));
-            snapshot.setIngredientsJson(snapshotJsonCodec.writeIngredients(draft.ingredients()));
-            snapshot.setSelectedByUserIds(toJsonArray(draft.selectedByUserIds()));
+            snapshot.setMethodStepsJson(encoded.methodStepsJson());
+            snapshot.setIngredientsJson(encoded.ingredientsJson());
+            snapshot.setSelectedByUserIds(encoded.selectedByUserIdsJson());
             snapshot.setSortOrder(sortOrder++);
             snapshotMapper.insert(snapshot);
         }
@@ -242,6 +246,16 @@ public class DinnerRecordService {
     private String toJsonArray(Set<Long> userIds) {
         return userIds.stream().sorted().map(String::valueOf)
                 .collect(Collectors.joining(",", "[", "]"));
+    }
+
+    private EncodedSnapshotDraft encodeSnapshotDraft(
+            DinnerRecordSnapshotAssembler.SnapshotDraft draft
+    ) {
+        return new EncodedSnapshotDraft(
+                draft,
+                snapshotJsonCodec.writeSteps(draft.steps()),
+                snapshotJsonCodec.writeIngredients(draft.ingredients()),
+                toJsonArray(draft.selectedByUserIds()));
     }
 
     private DinnerHouseholdMemberEntity requireMembership(Long userId) {
@@ -377,5 +391,13 @@ public class DinnerRecordService {
 
     private Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
+    }
+
+    private record EncodedSnapshotDraft(
+            DinnerRecordSnapshotAssembler.SnapshotDraft draft,
+            String methodStepsJson,
+            String ingredientsJson,
+            String selectedByUserIdsJson
+    ) {
     }
 }

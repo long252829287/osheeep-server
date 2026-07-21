@@ -265,6 +265,45 @@ class DinnerRecordSnapshotAssemblerTest {
     }
 
     @ParameterizedTest
+    @ValueSource(longs = {0L, -1L})
+    void ingredientIdMustBePositive(long ingredientId) {
+        DinnerRecipeEntity family = householdRecipe(14L, 70L, 8L, 2, 91L);
+        stubHouseholdAggregate(family,
+                List.of(ingredient(14L, ingredientId, "鸡蛋", true, 0)),
+                List.of(method(21L, 14L, "家常做法", "炒")),
+                List.of(step(301L, 21L, "翻炒", 0)),
+                Map.of(91L, approvedImage(91L)));
+
+        assertInvalid(() -> assembler.assemble(70L, List.of(
+                householdSelection(14L, 7L, 8L, 21L))));
+    }
+
+    @Test
+    void ingredientSortOrderMustNotBeNegative() {
+        DinnerRecipeEntity family = householdRecipe(14L, 70L, 8L, 2, 91L);
+        stubHouseholdAggregate(family,
+                List.of(ingredient(14L, 201L, "鸡蛋", true, -1)),
+                List.of(method(21L, 14L, "家常做法", "炒")),
+                List.of(step(301L, 21L, "翻炒", 0)),
+                Map.of(91L, approvedImage(91L)));
+
+        assertInvalid(() -> assembler.assemble(70L, List.of(
+                householdSelection(14L, 7L, 8L, 21L))));
+    }
+
+    @Test
+    void methodStepSortOrderMustNotBeNegative() {
+        DinnerRecipeEntity family = householdRecipe(14L, 70L, 8L, 2, 91L);
+        stubHouseholdAggregate(family, validIngredients(14L),
+                List.of(method(21L, 14L, "家常做法", "炒")),
+                List.of(step(301L, 21L, "翻炒", -1)),
+                Map.of(91L, approvedImage(91L)));
+
+        assertInvalid(() -> assembler.assemble(70L, List.of(
+                householdSelection(14L, 7L, 8L, 21L))));
+    }
+
+    @ParameterizedTest
     @MethodSource("invalidSystemIngredientRows")
     void systemRecipeIngredientMustBeActiveAndSystem(
             DinnerRecipeIngredientRow invalidIngredient

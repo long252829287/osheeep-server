@@ -230,10 +230,12 @@ public final class DinnerRecordSnapshotAssembler {
                     || row.recipeId() == null
                     || recipe == null
                     || row.ingredientId() == null
+                    || row.ingredientId() <= 0
                     || !ingredientVisibleToRecipe(recipe, row)
                     || !StringUtils.hasText(row.name())
                     || !StringUtils.hasText(row.unit())
                     || !validQuantity(row.quantity())
+                    || row.sortOrder() < 0
                     || !ingredientIdsByRecipe
                             .computeIfAbsent(row.recipeId(), ignored -> new HashSet<>())
                             .add(row.ingredientId())) {
@@ -285,7 +287,9 @@ public final class DinnerRecordSnapshotAssembler {
                     || row.getMethodId() == null
                     || !expectedMethodIds.contains(row.getMethodId())
                     || !StringUtils.hasText(row.getInstruction())
-                    || row.getInstruction().length() > MAX_INSTRUCTION_LENGTH) {
+                    || row.getInstruction().length() > MAX_INSTRUCTION_LENGTH
+                    || row.getSortOrder() == null
+                    || row.getSortOrder() < 0) {
                 throw invalidRecipe();
             }
             rawByMethod.computeIfAbsent(row.getMethodId(), ignored -> new ArrayList<>())

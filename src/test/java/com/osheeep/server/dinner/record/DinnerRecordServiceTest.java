@@ -162,6 +162,29 @@ class DinnerRecordServiceTest {
     }
 
     @Test
+    void everySnapshotDraftIsEncodedBeforeAnyCompletionWrite() {
+        DinnerMenuEntity menu = menu("CONFIRMED", 5L);
+        stubContext(menu);
+        when(recordMapper.selectOne(any())).thenReturn(null);
+        List<DinnerMenuSelectionEntity> selections = List.of(
+                selection(7L, 1L), selection(7L, 14L));
+        when(selectionMapper.selectList(any())).thenReturn(selections);
+        when(snapshotAssembler.assemble(11L, selections)).thenReturn(List.of(
+                systemDraft(1L, Set.of(7L)),
+                householdDraftWithInvalidStep(14L, Set.of(7L))));
+
+        assertThatThrownBy(() -> service.complete(
+                7L, 5L, "00000000-0000-4000-8000-000000000016"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Invalid dinner record snapshot JSON");
+
+        verify(recordMapper, never()).insert(any(DinnerCookingRecordEntity.class));
+        verify(snapshotMapper, never()).insert(any(DinnerRecordDishSnapshotEntity.class));
+        verify(menuMapper, never()).updateById(any(DinnerMenuEntity.class));
+        verify(actionMapper, never()).insert(any(DinnerMenuActionEntity.class));
+    }
+
+    @Test
     void snapshotInsertFailureEscapesBeforeMenuAndActionWrites() {
         DinnerMenuEntity menu = menu("CONFIRMED", 5L);
         stubContext(menu);
@@ -504,6 +527,20 @@ class DinnerRecordServiceTest {
                 List.of(
                         new RecordMethodStepSnapshotResponse("盛盘", 1),
                         new RecordMethodStepSnapshotResponse("翻炒", 0)),
+                List.of(new RecordIngredientSnapshotResponse(
+                        201L, "鸡蛋", BigDecimal.ONE, "枚", true, 0)));
+    }
+
+    private DinnerRecordSnapshotAssembler.SnapshotDraft householdDraftWithInvalidStep(
+            Long recipeId,
+            Set<Long> selectors
+    ) {
+        return new DinnerRecordSnapshotAssembler.SnapshotDraft(
+                recipeId, "HOUSEHOLD", 8L, "自家番茄炒蛋",
+                "https://www.osheeep.com/media/recipes/family-list.webp",
+                "家常菜", "鲜香", 2, 10, selectors,
+                21L, "家常做法", "炒",
+                List.of(new RecordMethodStepSnapshotResponse("翻炒", -1)),
                 List.of(new RecordIngredientSnapshotResponse(
                         201L, "鸡蛋", BigDecimal.ONE, "枚", true, 0)));
     }
