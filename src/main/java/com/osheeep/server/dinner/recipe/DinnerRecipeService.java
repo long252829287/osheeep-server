@@ -1,19 +1,15 @@
 package com.osheeep.server.dinner.recipe;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.osheeep.server.common.error.BusinessException;
-import com.osheeep.server.common.error.ErrorCode;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
 import com.osheeep.server.dinner.ingredient.entity.DinnerHouseholdInventoryEntity;
 import com.osheeep.server.dinner.ingredient.mapper.DinnerHouseholdInventoryMapper;
+import com.osheeep.server.dinner.recipe.DinnerRecipeAuthorizer.RecipeAccess;
+import com.osheeep.server.dinner.recipe.DinnerRecipeCatalogAssembler.CatalogEntry;
 import com.osheeep.server.dinner.recipe.RecipeMatchCalculator.Requirement;
 import com.osheeep.server.dinner.recipe.RecipeMatchCalculator.Stock;
 import com.osheeep.server.dinner.recipe.dto.RecipeIngredientResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeResponse;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
-import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeIngredientMapper;
-import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeIngredientRow;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -28,33 +24,33 @@ import org.springframework.stereotype.Service;
 public class DinnerRecipeService {
 
     private final DinnerRecipeMapper recipeMapper;
-    private final DinnerRecipeIngredientMapper recipeIngredientMapper;
     private final DinnerHouseholdInventoryMapper inventoryMapper;
-    private final DinnerHouseholdMemberMapper memberMapper;
+    private final DinnerRecipeAuthorizer authorizer;
+    private final DinnerRecipeCatalogAssembler catalogAssembler;
     private final RecipeMatchCalculator matchCalculator;
 
     @Autowired
     public DinnerRecipeService(
             DinnerRecipeMapper recipeMapper,
-            DinnerRecipeIngredientMapper recipeIngredientMapper,
             DinnerHouseholdInventoryMapper inventoryMapper,
-            DinnerHouseholdMemberMapper memberMapper
+            DinnerRecipeAuthorizer authorizer,
+            DinnerRecipeCatalogAssembler catalogAssembler
     ) {
-        this(recipeMapper, recipeIngredientMapper, inventoryMapper, memberMapper,
+        this(recipeMapper, inventoryMapper, authorizer, catalogAssembler,
                 new RecipeMatchCalculator());
     }
 
     DinnerRecipeService(
             DinnerRecipeMapper recipeMapper,
-            DinnerRecipeIngredientMapper recipeIngredientMapper,
             DinnerHouseholdInventoryMapper inventoryMapper,
-            DinnerHouseholdMemberMapper memberMapper,
+            DinnerRecipeAuthorizer authorizer,
+            DinnerRecipeCatalogAssembler catalogAssembler,
             RecipeMatchCalculator matchCalculator
     ) {
         this.recipeMapper = recipeMapper;
-        this.recipeIngredientMapper = recipeIngredientMapper;
         this.inventoryMapper = inventoryMapper;
-        this.memberMapper = memberMapper;
+        this.authorizer = authorizer;
+        this.catalogAssembler = catalogAssembler;
         this.matchCalculator = matchCalculator;
     }
 
@@ -64,32 +60,33 @@ public class DinnerRecipeService {
             Set<Long> excludeIngredientIds,
             boolean onlyCookable
     ) {
-        DinnerHouseholdMemberEntity membership = requireMembership(userId);
+        RecipeAccess access = authorizer.requireMembership(userId);
         List<DinnerRecipeEntity> recipes = recipeMapper.selectList(
                 Wrappers.<DinnerRecipeEntity>lambdaQuery()
-                        .eq(DinnerRecipeEntity::getScope, "SYSTEM")
                         .eq(DinnerRecipeEntity::getStatus, "PUBLISHED")
+                        .and(visible -> visible
+                                .eq(DinnerRecipeEntity::getScope, "SYSTEM")
+                                .or(household -> household
+                                        .eq(DinnerRecipeEntity::getScope, "HOUSEHOLD")
+                                        .eq(DinnerRecipeEntity::getHouseholdId,
+                                                access.householdId())))
                         .orderByAsc(DinnerRecipeEntity::getId));
-        List<Long> recipeIds = recipes.stream().map(DinnerRecipeEntity::getId).toList();
-        List<DinnerRecipeIngredientRow> ingredientRows = recipeIds.isEmpty()
-                ? List.of()
-                : recipeIngredientMapper.selectWithIngredientNames(recipeIds);
+        Map<Long, CatalogEntry> catalog = catalogAssembler.assemble(recipes);
         List<DinnerHouseholdInventoryEntity> inventory = inventoryMapper.selectList(
                 Wrappers.<DinnerHouseholdInventoryEntity>lambdaQuery()
                         .eq(DinnerHouseholdInventoryEntity::getHouseholdId,
-                                membership.getHouseholdId()));
+                                access.householdId()));
 
-        Map<Long, List<DinnerRecipeIngredientRow>> rowsByRecipe = ingredientRows.stream()
-                .collect(Collectors.groupingBy(DinnerRecipeIngredientRow::recipeId));
         Map<Long, Stock> householdStock = inventory.stream()
                 .collect(Collectors.toMap(
                         DinnerHouseholdInventoryEntity::getIngredientId,
                         item -> new Stock(item.getQuantity(), item.getUnit())));
 
         return recipes.stream()
-                .map(recipe -> response(
-                        recipe,
-                        rowsByRecipe.getOrDefault(recipe.getId(), List.of()),
+                .map(recipe -> catalog.get(recipe.getId()))
+                .filter(java.util.Objects::nonNull)
+                .map(entry -> response(
+                        entry,
                         householdStock,
                         includeIngredientIds,
                         excludeIngredientIds))
@@ -109,19 +106,19 @@ public class DinnerRecipeService {
     }
 
     private RecipeResponse response(
-            DinnerRecipeEntity recipe,
-            List<DinnerRecipeIngredientRow> unsortedRows,
+            CatalogEntry entry,
             Map<Long, Stock> householdStock,
             Set<Long> includeIngredientIds,
             Set<Long> excludeIngredientIds
     ) {
-        List<DinnerRecipeIngredientRow> rows = unsortedRows.stream()
-                .sorted(Comparator.comparingInt(DinnerRecipeIngredientRow::sortOrder))
+        DinnerRecipeEntity recipe = entry.recipe();
+        List<RecipeIngredientResponse> ingredients = entry.ingredients().stream()
+                .sorted(Comparator.comparingInt(RecipeIngredientResponse::sortOrder))
                 .toList();
-        List<Requirement> requirements = rows.stream()
-                .map(row -> new Requirement(
-                        row.ingredientId(), row.name(), row.quantity(), row.unit(),
-                        row.required(), row.sortOrder()))
+        List<Requirement> requirements = ingredients.stream()
+                .map(ingredient -> new Requirement(
+                        ingredient.ingredientId(), ingredient.name(), ingredient.quantity(),
+                        ingredient.unit(), ingredient.required(), ingredient.sortOrder()))
                 .toList();
         Map<Long, Stock> effectiveStock = new HashMap<>(householdStock);
         for (Requirement requirement : requirements) {
@@ -132,14 +129,11 @@ public class DinnerRecipeService {
         }
         excludeIngredientIds.forEach(effectiveStock::remove);
 
-        List<RecipeIngredientResponse> ingredients = rows.stream()
-                .map(row -> new RecipeIngredientResponse(
-                        row.ingredientId(), row.name(), row.quantity(), row.unit(),
-                        row.required(), row.sortOrder()))
-                .toList();
         return new RecipeResponse(
-                recipe.getId(), recipe.getName(), recipe.getImagePath(), recipe.getCategory(),
-                recipe.getFlavor(), recipe.getEstimatedMinutes(), ingredients,
+                recipe.getId(), recipe.getName(), entry.imagePath(), recipe.getCategory(),
+                recipe.getFlavor(), recipe.getEstimatedMinutes(), recipe.getScope(),
+                "SYSTEM".equals(recipe.getScope()) ? 1L : recipe.getVersion(),
+                entry.defaultMethod(), ingredients,
                 matchCalculator.calculate(requirements, effectiveStock));
     }
 
@@ -162,14 +156,4 @@ public class DinnerRecipeService {
         };
     }
 
-    private DinnerHouseholdMemberEntity requireMembership(Long userId) {
-        DinnerHouseholdMemberEntity membership = memberMapper.selectOne(
-                Wrappers.<DinnerHouseholdMemberEntity>lambdaQuery()
-                        .eq(DinnerHouseholdMemberEntity::getUserId, userId)
-                        .last("LIMIT 1"));
-        if (membership == null) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
-        return membership;
-    }
 }
