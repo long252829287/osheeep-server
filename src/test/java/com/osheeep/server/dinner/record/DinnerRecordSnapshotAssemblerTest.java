@@ -6,9 +6,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
@@ -35,6 +38,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -59,33 +63,42 @@ class DinnerRecordSnapshotAssemblerTest {
     }
 
     @Test
-    void assemblesSystemAndHouseholdSnapshotsInStableOrderWithOneBatchPerTable() {
+    void assemblesSystemAndMultipleHouseholdSnapshotsWithFiveBatchOperations() {
         DinnerRecipeEntity system = systemRecipe(1L, null);
-        DinnerRecipeEntity family = householdRecipe(14L, 70L, 8L, 2, 91L);
+        DinnerRecipeEntity firstFamily = householdRecipe(14L, 70L, 8L, 2, 91L);
+        DinnerRecipeEntity secondFamily = householdRecipe(15L, 70L, 3L, 4, 92L);
         List<DinnerMenuSelectionEntity> selections = List.of(
                 householdSelection(14L, 8L, 8L, 21L),
+                householdSelection(15L, 9L, 3L, 22L),
                 systemSelection(1L, 7L),
                 householdSelection(14L, 7L, 8L, 21L));
-        when(recipeMapper.selectByIds(List.of(1L, 14L)))
-                .thenReturn(List.of(family, system));
-        when(ingredientMapper.selectWithIngredientNames(List.of(1L, 14L))).thenReturn(List.of(
+        when(recipeMapper.selectByIds(List.of(1L, 14L, 15L)))
+                .thenReturn(List.of(secondFamily, firstFamily, system));
+        when(ingredientMapper.selectWithIngredientNames(List.of(1L, 14L, 15L)))
+                .thenReturn(List.of(
+                ingredient(15L, 301L, "豆腐", true, 0,
+                        "HOUSEHOLD", 70L, "ACTIVE"),
                 ingredient(14L, 202L, "葱", false, 1),
                 ingredient(1L, 102L, "盐", false, 0),
                 ingredient(14L, 201L, "鸡蛋", true, 0,
                         "HOUSEHOLD", 70L, "ACTIVE"),
                 ingredient(1L, 101L, "番茄", true, 0)));
-        when(methodMapper.selectByIds(List.of(21L))).thenReturn(List.of(
+        when(methodMapper.selectByIds(List.of(21L, 22L))).thenReturn(List.of(
+                method(22L, 15L, "炖煮做法", "炖"),
                 method(21L, 14L, "家常做法", "炒")));
         when(stepMapper.selectList(any())).thenReturn(List.of(
+                step(401L, 22L, "慢炖", 0),
                 step(302L, 21L, "盛盘", 1),
                 step(301L, 21L, "翻炒", 0)));
-        when(imageAssetService.findApprovedByIds(List.of(91L)))
-                .thenReturn(Map.of(91L, approvedImage(91L)));
+        when(imageAssetService.findApprovedByIds(List.of(91L, 92L)))
+                .thenReturn(Map.of(
+                        91L, approvedImage(91L),
+                        92L, approvedImage(92L)));
 
         var drafts = assembler.assemble(70L, selections);
 
         assertThat(drafts).extracting(DinnerRecordSnapshotAssembler.SnapshotDraft::recipeId)
-                .containsExactly(1L, 14L);
+                .containsExactly(1L, 14L, 15L);
         assertThat(drafts.getFirst().servings()).isNull();
         assertThat(drafts.getFirst().methodId()).isNull();
         assertThat(drafts.getFirst().ingredients())
@@ -100,11 +113,28 @@ class DinnerRecordSnapshotAssemblerTest {
                 .containsExactly(0, 1);
         assertThat(drafts.get(1).imagePath())
                 .isEqualTo("https://www.osheeep.com/media/recipes/family-list.webp");
-        verify(recipeMapper).selectByIds(List.of(1L, 14L));
-        verify(ingredientMapper).selectWithIngredientNames(List.of(1L, 14L));
-        verify(methodMapper).selectByIds(List.of(21L));
-        verify(stepMapper).selectList(any());
-        verify(imageAssetService).findApprovedByIds(List.of(91L));
+        assertThat(drafts.get(2).selectedByUserIds()).containsExactly(9L);
+        assertThat(drafts.get(2).methodId()).isEqualTo(22L);
+        assertThat(drafts.get(2).steps())
+                .extracting(step -> step.instruction())
+                .containsExactly("慢炖");
+        assertThat(drafts.get(2).ingredients())
+                .extracting(ingredient -> ingredient.ingredientId())
+                .containsExactly(301L);
+
+        verify(recipeMapper).selectByIds(List.of(1L, 14L, 15L));
+        verify(ingredientMapper).selectWithIngredientNames(List.of(1L, 14L, 15L));
+        verify(methodMapper).selectByIds(List.of(21L, 22L));
+        ArgumentCaptor<Wrapper<DinnerRecipeMethodStepEntity>> stepQuery = wrapperCaptor();
+        verify(stepMapper).selectList(stepQuery.capture());
+        AbstractWrapper<?, ?, ?> capturedStepQuery =
+                (AbstractWrapper<?, ?, ?>) stepQuery.getValue();
+        capturedStepQuery.getSqlSegment();
+        assertThat(capturedStepQuery.getParamNameValuePairs().values())
+                .containsExactlyInAnyOrder(21L, 22L);
+        verify(imageAssetService).findApprovedByIds(List.of(91L, 92L));
+        verifyNoMoreInteractions(
+                recipeMapper, ingredientMapper, methodMapper, stepMapper, imageAssetService);
     }
 
     @Test
@@ -473,6 +503,11 @@ class DinnerRecordSnapshotAssemblerTest {
                 "https://example.com/source", "author", "CC BY 4.0",
                 "https://creativecommons.org/licenses/by/4.0/",
                 LocalDate.of(2026, 7, 1), 1200, 900);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static <T> ArgumentCaptor<Wrapper<T>> wrapperCaptor() {
+        return (ArgumentCaptor) ArgumentCaptor.forClass(Wrapper.class);
     }
 
     private void assertInvalid(org.assertj.core.api.ThrowableAssert.ThrowingCallable callable) {
