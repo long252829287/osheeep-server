@@ -10,6 +10,9 @@ public record RecipeResponse(
         String category,
         String flavor,
         Integer estimatedMinutes,
+        String scope,
+        Long version,
+        RecipeMethodSummaryResponse defaultMethod,
         List<RecipeIngredientResponse> ingredients,
         RecipeMatchResponse match
 ) {
@@ -21,7 +24,22 @@ public record RecipeResponse(
             String flavor,
             Integer estimatedMinutes
     ) {
-        this(id, name, imagePath, category, flavor, estimatedMinutes, List.of(), null);
+        this(id, name, imagePath, category, flavor, estimatedMinutes,
+                "SYSTEM", 1L, null, List.of(), null);
+    }
+
+    public RecipeResponse(
+            Long id,
+            String name,
+            String imagePath,
+            String category,
+            String flavor,
+            Integer estimatedMinutes,
+            List<RecipeIngredientResponse> ingredients,
+            RecipeMatchResponse match
+    ) {
+        this(id, name, imagePath, category, flavor, estimatedMinutes,
+                "SYSTEM", 1L, null, ingredients, match);
     }
 
     public static RecipeResponse from(DinnerRecipeEntity recipe) {

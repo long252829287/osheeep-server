@@ -100,7 +100,7 @@ class DinnerRecipePublishSnapshotLoaderTest {
     }
 
     @Test
-    void moderationTextLimitFailureIsReturnedAsValidationFailure() {
+    void overlongMethodNameIsRejectedBeforeImageLookup() {
         DinnerRecipePublishSnapshotLoader loader = loader();
         when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
         when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 4L));
@@ -109,7 +109,7 @@ class DinnerRecipePublishSnapshotLoaderTest {
         assertThatThrownBy(() -> loader.loadForModeration(7L, 101L, 4L))
                 .isInstanceOf(RecipeValidationException.class);
 
-        verify(imageAssetService).requireApproved(9L);
+        verify(imageAssetService, never()).requireApproved(9L);
     }
 
     @Test
@@ -165,7 +165,7 @@ class DinnerRecipePublishSnapshotLoaderTest {
     private RecipeDraftResponse detailWithLongMethodName() {
         return new RecipeDraftResponse(101L, "DRAFT", 4L, "番茄炒蛋", "家常菜", "酸甜", 2, 15,
                 List.of(new RecipeIngredientResponse(1L, "番茄", BigDecimal.ONE, "个", true, 0)),
-                new RecipeMethodResponse(201L, "做法" + "x".repeat(2500), "炒",
+                new RecipeMethodResponse(201L, "做法" + "x".repeat(39), "炒",
                         List.of(new RecipeMethodStepResponse("切番茄", 0))),
                 null, List.of(), null);
     }

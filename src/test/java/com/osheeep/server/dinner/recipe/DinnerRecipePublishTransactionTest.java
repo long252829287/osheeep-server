@@ -213,7 +213,7 @@ class DinnerRecipePublishTransactionTest {
     private RecipeDraftResponse completeResponse() {
         return new RecipeDraftResponse(101L, "DRAFT", 4L, "番茄炒蛋", "家常菜", "酸甜", 2, 15,
                 List.of(new RecipeIngredientResponse(1L, "番茄", BigDecimal.ONE, "个", true, 0)),
-                new RecipeMethodResponse(201L, null, null,
+                new RecipeMethodResponse(201L, "家常炒", "炒",
                         List.of(new RecipeMethodStepResponse("切番茄", 0))),
                 null, List.of(), null);
     }

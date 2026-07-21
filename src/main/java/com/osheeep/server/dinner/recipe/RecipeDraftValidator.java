@@ -17,6 +17,7 @@ public class RecipeDraftValidator {
     private static final int MAX_BASIC_LABEL_LENGTH = 16;
     private static final int MAX_INGREDIENTS = 50;
     private static final int MAX_UNIT_LENGTH = 16;
+    private static final int MAX_COOKING_STYLE_LENGTH = 32;
     private static final int MAX_STEPS = 12;
     private static final int MAX_INSTRUCTION_LENGTH = 160;
 
@@ -96,6 +97,12 @@ public class RecipeDraftValidator {
         if (method == null) {
             issues.add(issue("METHOD", "defaultMethod", "请填写默认做法"));
             return;
+        }
+        if (!hasTextWithin(method.name(), MAX_NAME_LENGTH)) {
+            issues.add(issue("METHOD", "name", "请填写做法名称"));
+        }
+        if (!hasTextWithin(method.cookingStyle(), MAX_COOKING_STYLE_LENGTH)) {
+            issues.add(issue("METHOD", "cookingStyle", "请填写烹饪方式"));
         }
         List<RecipeMethodStepResponse> steps = method.steps() == null
                 ? List.of() : method.steps();

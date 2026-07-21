@@ -58,7 +58,7 @@ class RecipeDraftValidatorTest {
                 "番茄炒蛋", "家常菜", "咸鲜", 2, 15,
                 ingredients,
                 new RecipeMethodResponse(
-                        201L, null, null,
+                        201L, "家常做法", "炒",
                         List.of(new RecipeMethodStepResponse("炒熟", 0))),
                 9L)))
                 .extracting(RecipeValidationIssue::step, RecipeValidationIssue::field)
@@ -74,9 +74,26 @@ class RecipeDraftValidatorTest {
                 List.of(new RecipeIngredientResponse(
                         1L, "番茄", new BigDecimal("2.000"), "个", true, 0)),
                 new RecipeMethodResponse(
-                        201L, null, null,
+                        201L, "家常做法", "炒",
                         List.of(new RecipeMethodStepResponse("炒熟", 0))),
                 9L))).isEmpty();
+    }
+
+    @Test
+    void rejectsOverlongMethodNameAndCookingStyleWithStableFields() {
+        RecipeMethodResponse method = new RecipeMethodResponse(
+                201L, "做法" + "x".repeat(39), "烹饪" + "x".repeat(31),
+                List.of(new RecipeMethodStepResponse("炒熟", 0)));
+
+        assertThat(validator.validate(snapshot(
+                "番茄炒蛋", "家常菜", "咸鲜", 2, 15,
+                List.of(new RecipeIngredientResponse(
+                        1L, "番茄", BigDecimal.ONE, "个", true, 0)),
+                method, 9L)))
+                .extracting(RecipeValidationIssue::step, RecipeValidationIssue::field)
+                .containsExactly(
+                        tuple("METHOD", "name"),
+                        tuple("METHOD", "cookingStyle"));
     }
 
     @Test
@@ -86,7 +103,7 @@ class RecipeDraftValidatorTest {
                 List.of(new RecipeIngredientResponse(
                         1L, "番茄", new BigDecimal("1E+10"), "克", true, 0)),
                 new RecipeMethodResponse(
-                        201L, null, null,
+                        201L, "家常做法", "炒",
                         List.of(new RecipeMethodStepResponse("炒熟", 0))),
                 9L);
 
@@ -100,7 +117,7 @@ class RecipeDraftValidatorTest {
                 "番茄炒蛋", "家常菜", "咸鲜", 2, 15,
                 List.of(new RecipeIngredientResponse(
                         1L, "番茄", null, "个", true, 0)),
-                new RecipeMethodResponse(201L, null, null, steps), 9L);
+                new RecipeMethodResponse(201L, "家常做法", "炒", steps), 9L);
     }
 
     private RecipePublishSnapshot snapshot(

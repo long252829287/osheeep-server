@@ -12,6 +12,7 @@ import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.common.security.JwtService;
 import com.osheeep.server.dinner.recipe.dto.RecipeIngredientResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeMatchResponse;
+import com.osheeep.server.dinner.recipe.dto.RecipeMethodSummaryResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeResponse;
 import java.math.BigDecimal;
 import java.util.List;
@@ -65,6 +66,12 @@ class DinnerRecipeControllerTest {
                 .andExpect(jsonPath("$.data[0].category").value("家常菜"))
                 .andExpect(jsonPath("$.data[0].flavor").value("酸甜"))
                 .andExpect(jsonPath("$.data[0].estimatedMinutes").value(10))
+                .andExpect(jsonPath("$.data[0].scope").value("HOUSEHOLD"))
+                .andExpect(jsonPath("$.data[0].version").value(8))
+                .andExpect(jsonPath("$.data[0].defaultMethod.id").value(21))
+                .andExpect(jsonPath("$.data[0].defaultMethod.name").value("家常做法"))
+                .andExpect(jsonPath("$.data[0].defaultMethod.cookingStyle").value("炒"))
+                .andExpect(jsonPath("$.data[0].defaultMethod.steps").doesNotExist())
                 .andExpect(jsonPath("$.data[0].ingredients[0].ingredientId").value(101))
                 .andExpect(jsonPath("$.data[0].ingredients[0].name").value("番茄"))
                 .andExpect(jsonPath("$.data[0].ingredients[0].quantity").value(2.000))
@@ -98,6 +105,9 @@ class DinnerRecipeControllerTest {
                 "家常菜",
                 "酸甜",
                 10,
+                "HOUSEHOLD",
+                8L,
+                new RecipeMethodSummaryResponse(21L, "家常做法", "炒"),
                 List.of(new RecipeIngredientResponse(
                         101L, "番茄", new BigDecimal("2.000"), "个", true, 1)),
                 new RecipeMatchResponse("AVAILABLE", 1, 1, 100, List.of(), List.of()));
