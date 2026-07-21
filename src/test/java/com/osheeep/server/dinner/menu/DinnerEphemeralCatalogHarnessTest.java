@@ -3,6 +3,7 @@ package com.osheeep.server.dinner.menu;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -40,6 +41,21 @@ class DinnerEphemeralCatalogHarnessTest {
 
         assertUnsafe(() -> harness(
                 dataSource, URL, "production", BASE, "true", RUN_ID));
+
+        verifyNoInteractions(dataSource);
+    }
+
+    @Test
+    void jdbcUrlCatalogMustMatchTheRawTestCatalogBeforeOpeningAConnection() {
+        DataSource dataSource = mock(DataSource.class);
+
+        assertUnsafe(() -> harness(
+                dataSource,
+                "jdbc:mysql://127.0.0.1:3306/another_test_catalog",
+                BASE,
+                BASE,
+                "true",
+                RUN_ID));
 
         verifyNoInteractions(dataSource);
     }
@@ -130,6 +146,145 @@ class DinnerEphemeralCatalogHarnessTest {
         assertUnsafe(() -> harness.dataSourceFor(harness.freshCatalog()));
 
         verifyNoInteractions(dataSource);
+    }
+
+    @Test
+    void generatedNameMismatchFailsBeforeOpeningAConnection() {
+        DataSource dataSource = mock(DataSource.class);
+        DinnerEphemeralCatalogHarness harness = harness(
+                dataSource, URL, BASE, BASE, "true", RUN_ID);
+
+        assertUnsafe(() -> harness.createCatalog(
+                BASE + "_ephemeral_" + RUN_ID + "_fresh_copy"));
+
+        verifyNoInteractions(dataSource);
+    }
+
+    @Test
+    void redirectedActualBaseCatalogFailsBeforeDdlAndIsNeverTracked() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        Statement statement = mock(Statement.class);
+        ResultSet catalogResult = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.createStatement()).thenReturn(statement);
+        when(statement.executeQuery("SELECT DATABASE()"))
+                .thenReturn(catalogResult);
+        when(catalogResult.next()).thenReturn(true);
+        when(catalogResult.getString(1)).thenReturn("redirected_catalog");
+        DinnerEphemeralCatalogHarness harness = harness(
+                dataSource, URL, BASE, BASE, "true", RUN_ID);
+
+        assertUnsafe(() -> harness.createCatalog(harness.freshCatalog()));
+
+        verify(statement, never()).executeUpdate(anyString());
+        assertThat(harness.createdCatalogs()).isEmpty();
+    }
+
+    @Test
+    void nonMysqlEightBaseFailsBeforeDdlAndIsNeverTracked() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        GuardedConnection base = guardedConnection();
+        when(dataSource.getConnection()).thenReturn(base.connection());
+        when(base.versionResult().getString(1)).thenReturn("5.7.44");
+        DinnerEphemeralCatalogHarness harness = harness(
+                dataSource, URL, BASE, BASE, "true", RUN_ID);
+
+        assertUnsafe(() -> harness.createCatalog(harness.freshCatalog()));
+
+        verify(base.statement(), never()).executeUpdate(anyString());
+        assertThat(harness.createdCatalogs()).isEmpty();
+    }
+
+    @Test
+    void successfulCreateRemainsTrackedWhenStatementCloseFails() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        GuardedConnection create = guardedConnection();
+        when(dataSource.getConnection()).thenReturn(create.connection());
+        doThrow(new SQLException("statement close failed")).when(create.statement()).close();
+        DinnerEphemeralCatalogHarness harness = harness(
+                dataSource, URL, BASE, BASE, "true", RUN_ID);
+
+        assertUnsafe(() -> harness.createCatalog(harness.freshCatalog()));
+
+        assertThat(harness.createdCatalogs()).containsExactly(harness.freshCatalog());
+        verify(create.statement()).executeUpdate(
+                "CREATE DATABASE `" + harness.freshCatalog()
+                        + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+    }
+
+    @Test
+    void failedCreateIsNeverTracked() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        GuardedConnection create = guardedConnection();
+        when(dataSource.getConnection()).thenReturn(create.connection());
+        DinnerEphemeralCatalogHarness harness = harness(
+                dataSource, URL, BASE, BASE, "true", RUN_ID);
+        doThrow(new SQLException("create failed"))
+                .when(create.statement())
+                .executeUpdate(
+                        "CREATE DATABASE `" + harness.freshCatalog()
+                                + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+
+        assertUnsafe(() -> harness.createCatalog(harness.freshCatalog()));
+
+        assertThat(harness.createdCatalogs()).isEmpty();
+    }
+
+    @Test
+    void successfulDropIsUntrackedWhenStatementCloseFails() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        GuardedConnection create = guardedConnection();
+        GuardedConnection drop = guardedConnection();
+        when(dataSource.getConnection())
+                .thenReturn(create.connection())
+                .thenReturn(drop.connection());
+        doThrow(new SQLException("statement close failed")).when(drop.statement()).close();
+        DinnerEphemeralCatalogHarness harness = harness(
+                dataSource, URL, BASE, BASE, "true", RUN_ID);
+        harness.createCatalog(harness.freshCatalog());
+
+        assertUnsafe(() -> harness.dropCatalog(harness.freshCatalog()));
+
+        assertThat(harness.createdCatalogs()).isEmpty();
+        verify(drop.statement()).executeUpdate(
+                "DROP DATABASE `" + harness.freshCatalog() + "`");
+    }
+
+    @Test
+    void dropAllAttemptsEveryTrackedCatalogAfterTheFirstDropFails() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        GuardedConnection createFresh = guardedConnection();
+        GuardedConnection createV4 = guardedConnection();
+        GuardedConnection createV6 = guardedConnection();
+        GuardedConnection dropFresh = guardedConnection();
+        GuardedConnection dropV4 = guardedConnection();
+        GuardedConnection dropV6 = guardedConnection();
+        when(dataSource.getConnection()).thenReturn(
+                createFresh.connection(),
+                createV4.connection(),
+                createV6.connection(),
+                dropFresh.connection(),
+                dropV4.connection(),
+                dropV6.connection());
+        DinnerEphemeralCatalogHarness harness = harness(
+                dataSource, URL, BASE, BASE, "true", RUN_ID);
+        harness.createCatalog(harness.freshCatalog());
+        harness.createCatalog(harness.v4Catalog());
+        harness.createCatalog(harness.v6Catalog());
+        doThrow(new SQLException("drop failed"))
+                .when(dropFresh.statement())
+                .executeUpdate("DROP DATABASE `" + harness.freshCatalog() + "`");
+
+        assertUnsafe(harness::dropAll);
+
+        verify(dropFresh.statement()).executeUpdate(
+                "DROP DATABASE `" + harness.freshCatalog() + "`");
+        verify(dropV4.statement()).executeUpdate(
+                "DROP DATABASE `" + harness.v4Catalog() + "`");
+        verify(dropV6.statement()).executeUpdate(
+                "DROP DATABASE `" + harness.v6Catalog() + "`");
+        assertThat(harness.createdCatalogs()).containsExactly(harness.freshCatalog());
     }
 
     @Test
@@ -226,26 +381,41 @@ class DinnerEphemeralCatalogHarnessTest {
     }
 
     private Connection baseConnection(DataSource dataSource) throws Exception {
+        GuardedConnection base = guardedConnection();
+        when(dataSource.getConnection()).thenReturn(base.connection());
+        return base.connection();
+    }
+
+    private GuardedConnection guardedConnection() throws Exception {
         Connection connection = mock(Connection.class);
-        Statement statement = mock(Statement.class);
+        Statement catalogStatement = mock(Statement.class);
+        Statement versionStatement = mock(Statement.class);
+        Statement ddlStatement = mock(Statement.class);
         ResultSet catalogResult = mock(ResultSet.class);
         ResultSet versionResult = mock(ResultSet.class);
-        when(dataSource.getConnection()).thenReturn(connection);
-        when(connection.createStatement()).thenReturn(statement);
-        when(statement.executeQuery("SELECT DATABASE()"))
+        when(connection.createStatement())
+                .thenReturn(catalogStatement, versionStatement, ddlStatement);
+        when(catalogStatement.executeQuery("SELECT DATABASE()"))
                 .thenReturn(catalogResult);
-        when(statement.executeQuery("SELECT VERSION()"))
+        when(versionStatement.executeQuery("SELECT VERSION()"))
                 .thenReturn(versionResult);
         when(catalogResult.next()).thenReturn(true);
         when(catalogResult.getString(1)).thenReturn(BASE);
         when(versionResult.next()).thenReturn(true);
         when(versionResult.getString(1)).thenReturn("8.4.0");
-        return connection;
+        return new GuardedConnection(connection, ddlStatement, versionResult);
     }
 
     private void assertUnsafe(org.assertj.core.api.ThrowableAssert.ThrowingCallable callable) {
         assertThatThrownBy(callable)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage(DinnerEphemeralCatalogHarness.FAILURE_MESSAGE);
+    }
+
+    private record GuardedConnection(
+            Connection connection,
+            Statement statement,
+            ResultSet versionResult
+    ) {
     }
 }

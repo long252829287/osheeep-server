@@ -105,9 +105,9 @@ final class DinnerEphemeralCatalogHarness implements AutoCloseable {
                 statement.executeUpdate(
                         "CREATE DATABASE " + quotedCatalog
                                 + " CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+                createdCatalogs.add(catalog);
             }
-            createdCatalogs.add(catalog);
-        } catch (SQLException exception) {
+        } catch (SQLException | RuntimeException exception) {
             throw unsafe(exception);
         }
     }
@@ -137,19 +137,19 @@ final class DinnerEphemeralCatalogHarness implements AutoCloseable {
             requireGuardedBaseConnection(connection);
             try (var statement = connection.createStatement()) {
                 statement.executeUpdate("DROP DATABASE " + quotedCatalog);
+                createdCatalogs.remove(catalog);
             }
-            createdCatalogs.remove(catalog);
-        } catch (SQLException exception) {
+        } catch (SQLException | RuntimeException exception) {
             throw unsafe(exception);
         }
     }
 
     synchronized void dropAll() {
-        IllegalStateException failure = null;
+        RuntimeException failure = null;
         for (String catalog : new ArrayList<>(createdCatalogs)) {
             try {
                 dropCatalog(catalog);
-            } catch (IllegalStateException exception) {
+            } catch (RuntimeException exception) {
                 if (failure == null) {
                     failure = exception;
                 } else {
