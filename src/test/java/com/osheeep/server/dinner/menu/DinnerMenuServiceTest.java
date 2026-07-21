@@ -4,32 +4,51 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.image.DinnerImageAssetService;
+import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
 import com.osheeep.server.dinner.menu.dto.MenuDishResponse;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuActionEntity;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuEntity;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuSelectionEntity;
-import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuActionMapper;
+import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuSelectionMapper;
+import com.osheeep.server.dinner.recipe.DinnerRecipeCatalogAssembler;
+import com.osheeep.server.dinner.recipe.dto.RecipeIngredientResponse;
+import com.osheeep.server.dinner.recipe.dto.RecipeMethodSummaryResponse;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeMethodEntity;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodMapper;
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -42,11 +61,22 @@ class DinnerMenuServiceTest {
     @Mock private DinnerMenuSelectionMapper selectionMapper;
     @Mock private DinnerMenuActionMapper actionMapper;
     @Mock private DinnerRecipeMapper recipeMapper;
+    @Mock private DinnerRecipeMethodMapper methodMapper;
+    @Mock private DinnerImageAssetService imageAssetService;
+    @Mock private DinnerRecipeCatalogAssembler catalogAssembler;
 
     private DinnerMenuService service;
 
     @BeforeEach
     void setUp() {
+        MapperBuilderAssistant assistant =
+                new MapperBuilderAssistant(new MybatisConfiguration(), "test");
+        Stream.of(
+                        DinnerHouseholdMemberEntity.class,
+                        DinnerMenuEntity.class,
+                        DinnerMenuSelectionEntity.class,
+                        DinnerMenuActionEntity.class)
+                .forEach(entity -> TableInfoHelper.initTableInfo(assistant, entity));
         Clock clock = Clock.fixed(Instant.parse("2026-07-11T10:00:00Z"), ZoneOffset.UTC);
         service = new DinnerMenuService(
                 householdMapper,
@@ -55,33 +85,185 @@ class DinnerMenuServiceTest {
                 selectionMapper,
                 actionMapper,
                 recipeMapper,
+                methodMapper,
+                imageAssetService,
+                catalogAssembler,
                 new BusinessDateResolver(),
                 clock);
     }
 
     @Test
-    void todayMergesSelectionsRelativeToCurrentUser() {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
-        when(menuMapper.selectOne(any())).thenReturn(menu(31L));
+    void updateSelectionsPersistsResolvedSystemAndHouseholdIdentities() {
+        DinnerMenuEntity menu = menu(31L);
+        DinnerRecipeEntity system = publishedSystemRecipe(1L, "小炒黄牛肉");
+        DinnerRecipeEntity family = publishedHouseholdRecipe(14L, 11L, 8L, 91L);
+        List<DinnerRecipeEntity> recipes = List.of(system, family);
+        stubLockedContext(menu);
+        when(recipeMapper.selectByIds(any())).thenReturn(recipes);
+        when(catalogAssembler.assemble(recipes)).thenReturn(validCatalog(recipes));
+        when(selectionMapper.selectList(any()))
+                .thenReturn(List.of())
+                .thenReturn(List.of(
+                        systemSelection(31L, 7L, 1L),
+                        householdSelection(31L, 7L, 14L, 8L, 21L)));
+        when(methodMapper.selectByIds(List.of(21L)))
+                .thenReturn(List.of(method(21L, 14L, "家常做法", "炒")));
+        when(imageAssetService.findApprovedByIds(List.of(91L)))
+                .thenReturn(Map.of(91L, approvedImage(91L)));
+
+        var result = service.updateSelections(7L, List.of(14L, 1L), 4L);
+
+        ArgumentCaptor<DinnerMenuSelectionEntity> inserted =
+                ArgumentCaptor.forClass(DinnerMenuSelectionEntity.class);
+        verify(selectionMapper, times(2)).insert(inserted.capture());
+        assertThat(inserted.getAllValues())
+                .anySatisfy(row -> {
+                    assertThat(row.getRecipeId()).isEqualTo(1L);
+                    assertThat(row.getRecipeVersion()).isEqualTo(1L);
+                    assertThat(row.getMethodId()).isNull();
+                })
+                .anySatisfy(row -> {
+                    assertThat(row.getRecipeId()).isEqualTo(14L);
+                    assertThat(row.getRecipeVersion()).isEqualTo(8L);
+                    assertThat(row.getMethodId()).isEqualTo(21L);
+                });
+        assertThat(result.dishes()).extracting(MenuDishResponse::scope)
+                .containsExactly("SYSTEM", "HOUSEHOLD");
+        assertThat(result.version()).isEqualTo(5L);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidRequestedRecipes")
+    void invalidRequestedRecipeFailsBeforeSelectionWrites(InvalidRecipeFixture fixture) {
+        stubLockedContext(menu(31L));
+        when(recipeMapper.selectByIds(List.of(14L))).thenReturn(fixture.rows());
+
+        assertDinnerRecipeInvalid(
+                () -> service.updateSelections(7L, List.of(14L), 4L));
+
+        verify(selectionMapper, never()).delete(any());
+        verify(selectionMapper, never()).insert(any(DinnerMenuSelectionEntity.class));
+        verifyNoInteractions(catalogAssembler);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("damagedPublishedHouseholdAggregates")
+    void damagedPublishedHouseholdAggregateFailsBeforeSelectionWrites(String reason) {
+        DinnerRecipeEntity family = publishedHouseholdRecipe(14L, 11L, 8L, 91L);
+        stubLockedContext(menu(31L));
+        when(recipeMapper.selectByIds(List.of(14L))).thenReturn(List.of(family));
+        when(catalogAssembler.assemble(List.of(family))).thenReturn(Map.of());
+
+        assertDinnerRecipeInvalid(
+                () -> service.updateSelections(7L, List.of(14L), 4L));
+
+        assertThat(reason).isNotBlank();
+        verify(selectionMapper, never()).delete(any());
+        verify(selectionMapper, never()).insert(any(DinnerMenuSelectionEntity.class));
+    }
+
+    @Test
+    void todayMergesTwoSelectorsForSameSavedFamilyIdentity() {
+        DinnerMenuEntity menu = menu(31L);
+        DinnerRecipeEntity family = publishedHouseholdRecipe(14L, 11L, 8L, 91L);
+        stubTodayContext(menu);
         when(selectionMapper.selectList(any())).thenReturn(List.of(
-                selection(31L, 7L, 1L),
-                selection(31L, 7L, 2L),
-                selection(31L, 8L, 2L),
-                selection(31L, 8L, 3L)));
-        when(recipeMapper.selectByIds(any())).thenReturn(List.of(
-                recipe(1L, "小炒黄牛肉"),
-                recipe(2L, "番茄炒蛋"),
-                recipe(3L, "紫菜蛋花汤")));
+                householdSelection(31L, 7L, 14L, 8L, 21L),
+                householdSelection(31L, 8L, 14L, 8L, 21L)));
+        when(recipeMapper.selectByIds(List.of(14L))).thenReturn(List.of(family));
+        when(methodMapper.selectByIds(List.of(21L)))
+                .thenReturn(List.of(method(21L, 14L, "家常做法", "炒")));
+        when(imageAssetService.findApprovedByIds(List.of(91L)))
+                .thenReturn(Map.of(91L, approvedImage(91L)));
 
         var result = service.today(7L);
 
-        assertThat(result.dishes()).extracting(MenuDishResponse::source)
-                .containsExactly("ME", "BOTH", "PARTNER");
-        assertThat(result.mySelectionCount()).isEqualTo(2);
-        assertThat(result.partnerSelectionCount()).isEqualTo(2);
+        assertThat(result.dishes()).singleElement().satisfies(dish -> {
+            assertThat(dish.source()).isEqualTo("BOTH");
+            assertThat(dish.scope()).isEqualTo("HOUSEHOLD");
+            assertThat(dish.recipeVersion()).isEqualTo(8L);
+            assertThat(dish.method())
+                    .isEqualTo(new RecipeMethodSummaryResponse(21L, "家常做法", "炒"));
+        });
         assertThat(result.consensusCount()).isEqualTo(1);
-        assertThat(result.selectedRecipeIds()).containsExactly(1L, 2L);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("conflictingSelectionIdentities")
+    void todayRejectsSelectorsWithConflictingSavedIdentity(
+            String reason,
+            List<DinnerMenuSelectionEntity> selections
+    ) {
+        stubTodayContext(menu(31L));
+        when(selectionMapper.selectList(any())).thenReturn(selections);
+
+        assertDinnerRecipeInvalid(() -> service.today(7L));
+
+        assertThat(reason).isNotBlank();
+        verifyNoInteractions(recipeMapper, methodMapper, imageAssetService);
+    }
+
+    @Test
+    void todayRejectsSavedMethodBelongingToAnotherRecipe() {
+        DinnerRecipeEntity family = publishedHouseholdRecipe(14L, 11L, 8L, 91L);
+        stubTodayContext(menu(31L));
+        when(selectionMapper.selectList(any())).thenReturn(List.of(
+                householdSelection(31L, 7L, 14L, 8L, 21L)));
+        when(recipeMapper.selectByIds(List.of(14L))).thenReturn(List.of(family));
+        when(methodMapper.selectByIds(List.of(21L)))
+                .thenReturn(List.of(method(21L, 15L, "错误做法", "炒")));
+        when(imageAssetService.findApprovedByIds(List.of(91L)))
+                .thenReturn(Map.of(91L, approvedImage(91L)));
+
+        assertDinnerRecipeInvalid(() -> service.today(7L));
+    }
+
+    @Test
+    void todayRejectsTamperedSelectionFromAnotherHousehold() {
+        DinnerRecipeEntity foreign = publishedHouseholdRecipe(14L, 99L, 8L, 91L);
+        stubTodayContext(menu(31L));
+        when(selectionMapper.selectList(any())).thenReturn(List.of(
+                householdSelection(31L, 7L, 14L, 8L, 21L)));
+        when(recipeMapper.selectByIds(List.of(14L))).thenReturn(List.of(foreign));
+
+        assertDinnerRecipeInvalid(() -> service.today(7L));
+    }
+
+    @Test
+    void todayLoadsEachReferencedTableOnceForMultipleDishes() {
+        DinnerRecipeEntity system = publishedSystemRecipe(1L, "小炒黄牛肉");
+        DinnerRecipeEntity family = publishedHouseholdRecipe(14L, 11L, 8L, 91L);
+        stubTodayContext(menu(31L));
+        when(selectionMapper.selectList(any())).thenReturn(List.of(
+                systemSelection(31L, 7L, 1L),
+                householdSelection(31L, 8L, 14L, 8L, 21L)));
+        when(recipeMapper.selectByIds(List.of(1L, 14L))).thenReturn(List.of(system, family));
+        when(methodMapper.selectByIds(List.of(21L)))
+                .thenReturn(List.of(method(21L, 14L, "家常做法", "炒")));
+        when(imageAssetService.findApprovedByIds(List.of(91L)))
+                .thenReturn(Map.of(91L, approvedImage(91L)));
+
+        assertThat(service.today(7L).dishes()).hasSize(2);
+
+        verify(recipeMapper).selectByIds(List.of(1L, 14L));
+        verify(methodMapper).selectByIds(List.of(21L));
+        verify(imageAssetService).findApprovedByIds(List.of(91L));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("uniformlyCorruptedIdentities")
+    void todayRejectsUniformlyCorruptedIdentity(
+            String reason,
+            DinnerMenuSelectionEntity selection,
+            DinnerRecipeEntity recipe
+    ) {
+        stubTodayContext(menu(31L));
+        when(selectionMapper.selectList(any())).thenReturn(List.of(selection));
+        when(recipeMapper.selectByIds(List.of(recipe.getId()))).thenReturn(List.of(recipe));
+
+        assertDinnerRecipeInvalid(() -> service.today(7L));
+
+        assertThat(reason).isNotBlank();
     }
 
     @Test
@@ -108,16 +290,17 @@ class DinnerMenuServiceTest {
         DinnerMenuEntity menu = menu(31L);
         menu.setStatus("CONFIRMED");
         menu.setConfirmedBy(7L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
-        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
-                .thenReturn(menu);
+        DinnerRecipeEntity first = publishedSystemRecipe(1L, "小炒黄牛肉");
+        DinnerRecipeEntity second = publishedSystemRecipe(2L, "番茄炒蛋");
+        List<DinnerRecipeEntity> recipes = List.of(first, second);
+        stubLockedContext(menu);
         when(selectionMapper.selectList(any()))
-                .thenReturn(List.of(selection(31L, 7L, 1L)))
-                .thenReturn(List.of(selection(31L, 7L, 1L), selection(31L, 7L, 2L)));
-        when(recipeMapper.selectByIds(any())).thenReturn(List.of(
-                publishedSystemRecipe(1L, "小炒黄牛肉"),
-                publishedSystemRecipe(2L, "番茄炒蛋")));
+                .thenReturn(List.of(systemSelection(31L, 7L, 1L)))
+                .thenReturn(List.of(
+                        systemSelection(31L, 7L, 1L),
+                        systemSelection(31L, 7L, 2L)));
+        when(recipeMapper.selectByIds(any())).thenReturn(recipes);
+        when(catalogAssembler.assemble(recipes)).thenReturn(validCatalog(recipes));
 
         var result = service.updateSelections(7L, List.of(1L, 2L), 4L);
 
@@ -128,31 +311,29 @@ class DinnerMenuServiceTest {
     }
 
     @Test
-    void staleVersionDoesNotReplaceSelections() {
+    void staleVersionDoesNotResolveRecipesOrReplaceSelections() {
         DinnerMenuEntity menu = menu(31L);
         menu.setVersion(6L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
-        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
-                .thenReturn(menu);
+        stubLockedContext(menu);
 
         assertThatThrownBy(() -> service.updateSelections(7L, List.of(1L), 5L))
                 .isInstanceOfSatisfying(BusinessException.class, error ->
-                        assertThat(error.errorCode()).isEqualTo(ErrorCode.DINNER_MENU_VERSION_CONFLICT));
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_MENU_VERSION_CONFLICT));
         verify(selectionMapper, never()).delete(any());
+        verify(selectionMapper, never()).insert(any(DinnerMenuSelectionEntity.class));
+        verifyNoInteractions(recipeMapper, catalogAssembler);
     }
 
     @Test
     void confirmAdvancesNonEmptyDraftOnce() {
         DinnerMenuEntity menu = menu(31L);
         menu.setVersion(5L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
-        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
-                .thenReturn(menu);
+        stubLockedContext(menu);
         when(actionMapper.selectOne(any())).thenReturn(null);
-        when(selectionMapper.selectList(any())).thenReturn(List.of(selection(31L, 7L, 1L)));
-        when(recipeMapper.selectByIds(any())).thenReturn(List.of(
+        when(selectionMapper.selectList(any())).thenReturn(List.of(
+                systemSelection(31L, 7L, 1L)));
+        when(recipeMapper.selectByIds(List.of(1L))).thenReturn(List.of(
                 publishedSystemRecipe(1L, "番茄炒蛋")));
 
         var result = service.confirm(7L, 5L, "00000000-0000-4000-8000-000000000001");
@@ -165,11 +346,7 @@ class DinnerMenuServiceTest {
 
     @Test
     void confirmRejectsEmptyMenu() {
-        DinnerMenuEntity menu = menu(31L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
-        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
-                .thenReturn(menu);
+        stubLockedContext(menu(31L));
         when(actionMapper.selectOne(any())).thenReturn(null);
         when(selectionMapper.selectList(any())).thenReturn(List.of());
 
@@ -186,13 +363,11 @@ class DinnerMenuServiceTest {
         menu.setVersion(6L);
         DinnerMenuActionEntity action = new DinnerMenuActionEntity();
         action.setIdempotencyKey("00000000-0000-4000-8000-000000000003");
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
-        when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
-                .thenReturn(menu);
+        stubLockedContext(menu);
         when(actionMapper.selectOne(any())).thenReturn(action);
-        when(selectionMapper.selectList(any())).thenReturn(List.of(selection(31L, 7L, 1L)));
-        when(recipeMapper.selectByIds(any())).thenReturn(List.of(
+        when(selectionMapper.selectList(any())).thenReturn(List.of(
+                systemSelection(31L, 7L, 1L)));
+        when(recipeMapper.selectByIds(List.of(1L))).thenReturn(List.of(
                 publishedSystemRecipe(1L, "番茄炒蛋")));
 
         var result = service.confirm(7L, 5L, action.getIdempotencyKey());
@@ -202,21 +377,88 @@ class DinnerMenuServiceTest {
         verify(actionMapper, never()).insert(any(DinnerMenuActionEntity.class));
     }
 
-    private DinnerHouseholdMemberEntity member(Long householdId, Long userId) {
+    private static Stream<InvalidRecipeFixture> invalidRequestedRecipes() {
+        DinnerRecipeEntity crossHousehold =
+                publishedHouseholdRecipe(14L, 99L, 8L, 91L);
+        DinnerRecipeEntity draft = publishedSystemRecipe(14L, "草稿系统菜");
+        draft.setStatus("DRAFT");
+        DinnerRecipeEntity archived = publishedSystemRecipe(14L, "归档系统菜");
+        archived.setStatus("ARCHIVED");
+        return Stream.of(
+                new InvalidRecipeFixture("cross household", List.of(crossHousehold)),
+                new InvalidRecipeFixture("draft", List.of(draft)),
+                new InvalidRecipeFixture("archived", List.of(archived)),
+                new InvalidRecipeFixture("missing", List.of()));
+    }
+
+    private static Stream<String> damagedPublishedHouseholdAggregates() {
+        return Stream.of(
+                "only optional ingredients",
+                "blank method metadata",
+                "zero steps",
+                "missing approved image");
+    }
+
+    private static Stream<org.junit.jupiter.params.provider.Arguments>
+            conflictingSelectionIdentities() {
+        return Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "different versions",
+                        List.of(
+                                householdSelection(31L, 7L, 14L, 8L, 21L),
+                                householdSelection(31L, 8L, 14L, 9L, 21L))),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "different methods",
+                        List.of(
+                                householdSelection(31L, 7L, 14L, 8L, 21L),
+                                householdSelection(31L, 8L, 14L, 8L, 22L))));
+    }
+
+    private static Stream<org.junit.jupiter.params.provider.Arguments>
+            uniformlyCorruptedIdentities() {
+        return Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "household null method",
+                        householdSelection(31L, 7L, 14L, 8L, null),
+                        publishedHouseholdRecipe(14L, 11L, 8L, 91L)),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "system non-null method",
+                        selection(31L, 7L, 1L, 1L, 21L),
+                        publishedSystemRecipe(1L, "系统菜")),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "system non-one version",
+                        selection(31L, 7L, 1L, 2L, null),
+                        publishedSystemRecipe(1L, "系统菜")));
+    }
+
+    private void stubLockedContext(DinnerMenuEntity menu) {
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11))).thenReturn(menu);
+    }
+
+    private void stubTodayContext(DinnerMenuEntity menu) {
+        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(menuMapper.selectOne(any())).thenReturn(menu);
+    }
+
+    private static DinnerHouseholdMemberEntity member(Long householdId, Long userId) {
         DinnerHouseholdMemberEntity member = new DinnerHouseholdMemberEntity();
         member.setHouseholdId(householdId);
         member.setUserId(userId);
         return member;
     }
 
-    private DinnerHouseholdEntity household(Long id) {
+    private static DinnerHouseholdEntity household(Long id) {
         DinnerHouseholdEntity household = new DinnerHouseholdEntity();
         household.setId(id);
         household.setTimezone("Asia/Shanghai");
         return household;
     }
 
-    private DinnerMenuEntity menu(Long id) {
+    private static DinnerMenuEntity menu(Long id) {
         DinnerMenuEntity menu = new DinnerMenuEntity();
         menu.setId(id);
         menu.setHouseholdId(11L);
@@ -226,29 +468,137 @@ class DinnerMenuServiceTest {
         return menu;
     }
 
-    private DinnerMenuSelectionEntity selection(Long menuId, Long userId, Long recipeId) {
+    private static DinnerMenuSelectionEntity systemSelection(
+            Long menuId,
+            Long userId,
+            Long recipeId
+    ) {
+        return selection(menuId, userId, recipeId, 1L, null);
+    }
+
+    private static DinnerMenuSelectionEntity householdSelection(
+            Long menuId,
+            Long userId,
+            Long recipeId,
+            Long version,
+            Long methodId
+    ) {
+        return selection(menuId, userId, recipeId, version, methodId);
+    }
+
+    private static DinnerMenuSelectionEntity selection(
+            Long menuId,
+            Long userId,
+            Long recipeId,
+            Long version,
+            Long methodId
+    ) {
         DinnerMenuSelectionEntity selection = new DinnerMenuSelectionEntity();
         selection.setMenuId(menuId);
         selection.setUserId(userId);
         selection.setRecipeId(recipeId);
+        selection.setRecipeVersion(version);
+        selection.setMethodId(methodId);
         return selection;
     }
 
-    private DinnerRecipeEntity recipe(Long id, String name) {
-        DinnerRecipeEntity recipe = new DinnerRecipeEntity();
-        recipe.setId(id);
-        recipe.setName(name);
+    private static DinnerRecipeEntity publishedSystemRecipe(Long id, String name) {
+        DinnerRecipeEntity recipe = baseRecipe(id, name);
+        recipe.setScope("SYSTEM");
         recipe.setImagePath("/assets/recipes/" + id + ".jpg");
-        recipe.setCategory("家常菜");
-        recipe.setFlavor("鲜香");
-        recipe.setEstimatedMinutes(10);
+        recipe.setVersion(1L);
         return recipe;
     }
 
-    private DinnerRecipeEntity publishedSystemRecipe(Long id, String name) {
-        DinnerRecipeEntity recipe = recipe(id, name);
-        recipe.setScope("SYSTEM");
+    private static DinnerRecipeEntity publishedHouseholdRecipe(
+            Long id,
+            Long householdId,
+            Long version,
+            Long imageAssetId
+    ) {
+        DinnerRecipeEntity recipe = baseRecipe(id, "自家番茄炒蛋");
+        recipe.setScope("HOUSEHOLD");
+        recipe.setHouseholdId(householdId);
+        recipe.setVersion(version);
+        recipe.setServings(2);
+        recipe.setImageAssetId(imageAssetId);
+        return recipe;
+    }
+
+    private static DinnerRecipeEntity baseRecipe(Long id, String name) {
+        DinnerRecipeEntity recipe = new DinnerRecipeEntity();
+        recipe.setId(id);
+        recipe.setName(name);
+        recipe.setCategory("家常菜");
+        recipe.setFlavor("鲜香");
+        recipe.setEstimatedMinutes(10);
         recipe.setStatus("PUBLISHED");
         return recipe;
+    }
+
+    private static DinnerRecipeMethodEntity method(
+            Long id,
+            Long recipeId,
+            String name,
+            String cookingStyle
+    ) {
+        DinnerRecipeMethodEntity method = new DinnerRecipeMethodEntity();
+        method.setId(id);
+        method.setRecipeId(recipeId);
+        method.setName(name);
+        method.setCookingStyle(cookingStyle);
+        method.setStatus("ACTIVE");
+        method.setIsDefault(true);
+        return method;
+    }
+
+    private Map<Long, DinnerRecipeCatalogAssembler.CatalogEntry> validCatalog(
+            List<DinnerRecipeEntity> recipes
+    ) {
+        Map<Long, DinnerRecipeCatalogAssembler.CatalogEntry> catalog = new LinkedHashMap<>();
+        for (DinnerRecipeEntity recipe : recipes) {
+            RecipeMethodSummaryResponse method = "HOUSEHOLD".equals(recipe.getScope())
+                    ? new RecipeMethodSummaryResponse(21L, "家常做法", "炒")
+                    : null;
+            String imagePath = "HOUSEHOLD".equals(recipe.getScope())
+                    ? approvedImage(recipe.getImageAssetId()).listUrl()
+                    : recipe.getImagePath();
+            catalog.put(recipe.getId(), new DinnerRecipeCatalogAssembler.CatalogEntry(
+                    recipe,
+                    imagePath,
+                    List.of(new RecipeIngredientResponse(
+                            101L, "鸡蛋", BigDecimal.ONE, "枚", true, 0)),
+                    method));
+        }
+        return catalog;
+    }
+
+    private static ImageAssetResponse approvedImage(Long id) {
+        return new ImageAssetResponse(
+                id, "番茄炒蛋",
+                "https://www.osheeep.com/media/recipes/family-list.webp",
+                "https://www.osheeep.com/media/recipes/family-detail.webp",
+                "https://example.com/source", "author", "CC BY 4.0",
+                "https://creativecommons.org/licenses/by/4.0/",
+                LocalDate.of(2026, 7, 1), 1200, 900);
+    }
+
+    private void assertDinnerRecipeInvalid(
+            org.assertj.core.api.ThrowableAssert.ThrowingCallable callable
+    ) {
+        assertThatThrownBy(callable)
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(
+                                ErrorCode.DINNER_RECIPE_INVALID));
+    }
+
+    private record InvalidRecipeFixture(
+            String name,
+            List<DinnerRecipeEntity> rows
+    ) {
+        @Override
+        public String toString() {
+            return name;
+        }
     }
 }

@@ -7,6 +7,8 @@ import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.image.DinnerImageAssetService;
+import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
 import com.osheeep.server.dinner.menu.dto.MenuDishResponse;
 import com.osheeep.server.dinner.menu.dto.TodayMenuResponse;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuActionEntity;
@@ -15,8 +17,12 @@ import com.osheeep.server.dinner.menu.entity.DinnerMenuSelectionEntity;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuActionMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuSelectionMapper;
+import com.osheeep.server.dinner.recipe.DinnerRecipeCatalogAssembler;
+import com.osheeep.server.dinner.recipe.dto.RecipeMethodSummaryResponse;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
+import com.osheeep.server.dinner.recipe.entity.DinnerRecipeMethodEntity;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -35,6 +41,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 @Service
 public class DinnerMenuService {
@@ -45,6 +52,9 @@ public class DinnerMenuService {
     private final DinnerMenuSelectionMapper selectionMapper;
     private final DinnerMenuActionMapper actionMapper;
     private final DinnerRecipeMapper recipeMapper;
+    private final DinnerRecipeMethodMapper methodMapper;
+    private final DinnerImageAssetService imageAssetService;
+    private final DinnerRecipeCatalogAssembler catalogAssembler;
     private final BusinessDateResolver businessDateResolver;
     private final Clock clock;
 
@@ -56,10 +66,14 @@ public class DinnerMenuService {
             DinnerMenuSelectionMapper selectionMapper,
             DinnerMenuActionMapper actionMapper,
             DinnerRecipeMapper recipeMapper,
+            DinnerRecipeMethodMapper methodMapper,
+            DinnerImageAssetService imageAssetService,
+            DinnerRecipeCatalogAssembler catalogAssembler,
             BusinessDateResolver businessDateResolver
     ) {
         this(householdMapper, memberMapper, menuMapper, selectionMapper, actionMapper,
-                recipeMapper, businessDateResolver, Clock.systemUTC());
+                recipeMapper, methodMapper, imageAssetService, catalogAssembler,
+                businessDateResolver, Clock.systemUTC());
     }
 
     DinnerMenuService(
@@ -69,6 +83,9 @@ public class DinnerMenuService {
             DinnerMenuSelectionMapper selectionMapper,
             DinnerMenuActionMapper actionMapper,
             DinnerRecipeMapper recipeMapper,
+            DinnerRecipeMethodMapper methodMapper,
+            DinnerImageAssetService imageAssetService,
+            DinnerRecipeCatalogAssembler catalogAssembler,
             BusinessDateResolver businessDateResolver,
             Clock clock
     ) {
@@ -78,6 +95,9 @@ public class DinnerMenuService {
         this.selectionMapper = selectionMapper;
         this.actionMapper = actionMapper;
         this.recipeMapper = recipeMapper;
+        this.methodMapper = methodMapper;
+        this.imageAssetService = imageAssetService;
+        this.catalogAssembler = catalogAssembler;
         this.businessDateResolver = businessDateResolver;
         this.clock = clock;
     }
@@ -114,7 +134,8 @@ public class DinnerMenuService {
         List<Long> recipeIds = requestedRecipeIds == null
                 ? List.of()
                 : requestedRecipeIds.stream().filter(Objects::nonNull).distinct().sorted().toList();
-        validateRecipes(recipeIds);
+        Map<Long, ValidatedRecipe> recipesById =
+                validateRecipes(recipeIds, context.household().getId());
 
         List<DinnerMenuSelectionEntity> currentSelections = selections(menu.getId());
         List<Long> currentUserRecipeIds = currentSelections.stream()
@@ -135,6 +156,10 @@ public class DinnerMenuService {
             selection.setMenuId(menu.getId());
             selection.setUserId(userId);
             selection.setRecipeId(recipeId);
+            ValidatedRecipe validated = recipesById.get(recipeId);
+            selection.setRecipeVersion(validated.selectedVersion());
+            selection.setMethodId(
+                    validated.method() == null ? null : validated.method().id());
             selectionMapper.insert(selection);
         }
         if ("CONFIRMED".equals(menu.getStatus())) {
@@ -205,26 +230,65 @@ public class DinnerMenuService {
     private TodayMenuResponse response(DinnerMenuEntity menu, Long currentUserId) {
         List<DinnerMenuSelectionEntity> selections = selections(menu.getId());
         Map<Long, Set<Long>> selectorsByRecipe = new LinkedHashMap<>();
+        Map<Long, SelectionIdentity> identitiesByRecipe = new LinkedHashMap<>();
         for (DinnerMenuSelectionEntity selection : selections) {
+            if (selection.getRecipeId() == null || selection.getUserId() == null) {
+                throw invalidRecipe();
+            }
+            SelectionIdentity identity = new SelectionIdentity(
+                    selection.getRecipeVersion(), selection.getMethodId());
+            SelectionIdentity previous = identitiesByRecipe.putIfAbsent(
+                    selection.getRecipeId(), identity);
+            if (previous != null && !previous.equals(identity)) {
+                throw invalidRecipe();
+            }
             selectorsByRecipe.computeIfAbsent(selection.getRecipeId(), ignored -> new LinkedHashSet<>())
                     .add(selection.getUserId());
         }
 
         List<Long> recipeIds = selectorsByRecipe.keySet().stream().sorted().toList();
-        Map<Long, DinnerRecipeEntity> recipesById = new HashMap<>();
-        if (!recipeIds.isEmpty()) {
-            for (DinnerRecipeEntity recipe : recipeMapper.selectByIds(recipeIds)) {
-                recipesById.put(recipe.getId(), recipe);
+        Map<Long, DinnerRecipeEntity> recipesById = loadRecipes(recipeIds);
+        List<Long> methodIds = new ArrayList<>();
+        List<Long> imageAssetIds = new ArrayList<>();
+        for (Long recipeId : recipeIds) {
+            DinnerRecipeEntity recipe = recipesById.get(recipeId);
+            SelectionIdentity identity = identitiesByRecipe.get(recipeId);
+            if ("SYSTEM".equals(recipe.getScope())) {
+                if (!"PUBLISHED".equals(recipe.getStatus())
+                        || !Objects.equals(identity.recipeVersion(), 1L)
+                        || identity.methodId() != null) {
+                    throw invalidRecipe();
+                }
+                continue;
             }
+            if (!"HOUSEHOLD".equals(recipe.getScope())
+                    || !"PUBLISHED".equals(recipe.getStatus())
+                    || !Objects.equals(recipe.getHouseholdId(), menu.getHouseholdId())
+                    || identity.recipeVersion() == null
+                    || identity.recipeVersion() <= 0
+                    || identity.methodId() == null
+                    || recipe.getImageAssetId() == null) {
+                throw invalidRecipe();
+            }
+            methodIds.add(identity.methodId());
+            imageAssetIds.add(recipe.getImageAssetId());
+        }
+
+        List<Long> distinctMethodIds = methodIds.stream().distinct().sorted().toList();
+        Map<Long, DinnerRecipeMethodEntity> methodsById = loadMethods(distinctMethodIds);
+        List<Long> distinctImageAssetIds = imageAssetIds.stream().distinct().sorted().toList();
+        Map<Long, ImageAssetResponse> imagesById = distinctImageAssetIds.isEmpty()
+                ? Map.of()
+                : imageAssetService.findApprovedByIds(distinctImageAssetIds);
+        if (!imagesById.keySet().equals(new LinkedHashSet<>(distinctImageAssetIds))) {
+            throw invalidRecipe();
         }
 
         List<MenuDishResponse> dishes = new ArrayList<>();
         int consensusCount = 0;
         for (Long recipeId : recipeIds) {
             DinnerRecipeEntity recipe = recipesById.get(recipeId);
-            if (recipe == null) {
-                continue;
-            }
+            SelectionIdentity identity = identitiesByRecipe.get(recipeId);
             Set<Long> selectors = selectorsByRecipe.get(recipeId);
             String source;
             if (selectors.size() > 1) {
@@ -235,9 +299,28 @@ public class DinnerMenuService {
             } else {
                 source = "PARTNER";
             }
+            RecipeMethodSummaryResponse method = null;
+            String imagePath = recipe.getImagePath();
+            if ("HOUSEHOLD".equals(recipe.getScope())) {
+                DinnerRecipeMethodEntity savedMethod = methodsById.get(identity.methodId());
+                if (savedMethod == null
+                        || !Objects.equals(savedMethod.getRecipeId(), recipeId)
+                        || !StringUtils.hasText(savedMethod.getName())
+                        || !StringUtils.hasText(savedMethod.getCookingStyle())) {
+                    throw invalidRecipe();
+                }
+                ImageAssetResponse image = imagesById.get(recipe.getImageAssetId());
+                if (image == null || !StringUtils.hasText(image.listUrl())) {
+                    throw invalidRecipe();
+                }
+                method = new RecipeMethodSummaryResponse(
+                        savedMethod.getId(), savedMethod.getName(), savedMethod.getCookingStyle());
+                imagePath = image.listUrl();
+            }
             dishes.add(new MenuDishResponse(
-                    recipe.getId(), recipe.getName(), recipe.getImagePath(), recipe.getCategory(),
-                    recipe.getFlavor(), recipe.getEstimatedMinutes(), source));
+                    recipe.getId(), recipe.getName(), imagePath, recipe.getCategory(),
+                    recipe.getFlavor(), recipe.getEstimatedMinutes(), source, recipe.getScope(),
+                    identity.recipeVersion(), method));
         }
 
         List<Long> selectedRecipeIds = selections.stream()
@@ -299,16 +382,91 @@ public class DinnerMenuService {
         }
     }
 
-    private void validateRecipes(List<Long> recipeIds) {
+    private Map<Long, ValidatedRecipe> validateRecipes(
+            List<Long> recipeIds,
+            Long householdId
+    ) {
         if (recipeIds.isEmpty()) {
-            return;
+            return Map.of();
         }
         List<DinnerRecipeEntity> recipes = recipeMapper.selectByIds(recipeIds);
-        boolean valid = recipes.size() == recipeIds.size() && recipes.stream().allMatch(recipe ->
-                "SYSTEM".equals(recipe.getScope()) && "PUBLISHED".equals(recipe.getStatus()));
-        if (!valid) {
-            throw new BusinessException(ErrorCode.DINNER_RECIPE_INVALID);
+        Map<Long, DinnerRecipeEntity> recipesById = mapRecipes(recipes, recipeIds);
+        for (Long recipeId : recipeIds) {
+            DinnerRecipeEntity recipe = recipesById.get(recipeId);
+            boolean system = "SYSTEM".equals(recipe.getScope())
+                    && "PUBLISHED".equals(recipe.getStatus());
+            boolean household = "HOUSEHOLD".equals(recipe.getScope())
+                    && "PUBLISHED".equals(recipe.getStatus())
+                    && Objects.equals(recipe.getHouseholdId(), householdId)
+                    && recipe.getVersion() != null
+                    && recipe.getVersion() > 0;
+            if (!system && !household) {
+                throw invalidRecipe();
+            }
         }
+        Map<Long, DinnerRecipeCatalogAssembler.CatalogEntry> catalog =
+                catalogAssembler.assemble(recipes);
+        if (!catalog.keySet().equals(new LinkedHashSet<>(recipeIds))) {
+            throw invalidRecipe();
+        }
+        Map<Long, ValidatedRecipe> validated = new LinkedHashMap<>();
+        for (Long recipeId : recipeIds) {
+            DinnerRecipeEntity recipe = recipesById.get(recipeId);
+            RecipeMethodSummaryResponse method = catalog.get(recipeId).defaultMethod();
+            if (("SYSTEM".equals(recipe.getScope()) && method != null)
+                    || ("HOUSEHOLD".equals(recipe.getScope()) && method == null)) {
+                throw invalidRecipe();
+            }
+            validated.put(recipeId, new ValidatedRecipe(recipe, method));
+        }
+        return Map.copyOf(validated);
+    }
+
+    private Map<Long, DinnerRecipeEntity> loadRecipes(List<Long> recipeIds) {
+        if (recipeIds.isEmpty()) {
+            return Map.of();
+        }
+        return mapRecipes(recipeMapper.selectByIds(recipeIds), recipeIds);
+    }
+
+    private Map<Long, DinnerRecipeEntity> mapRecipes(
+            List<DinnerRecipeEntity> recipes,
+            List<Long> expectedIds
+    ) {
+        Map<Long, DinnerRecipeEntity> recipesById = new HashMap<>();
+        for (DinnerRecipeEntity recipe : recipes) {
+            if (recipe == null
+                    || recipe.getId() == null
+                    || recipesById.putIfAbsent(recipe.getId(), recipe) != null) {
+                throw invalidRecipe();
+            }
+        }
+        if (!recipesById.keySet().equals(new LinkedHashSet<>(expectedIds))) {
+            throw invalidRecipe();
+        }
+        return recipesById;
+    }
+
+    private Map<Long, DinnerRecipeMethodEntity> loadMethods(List<Long> methodIds) {
+        if (methodIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, DinnerRecipeMethodEntity> methodsById = new HashMap<>();
+        for (DinnerRecipeMethodEntity method : methodMapper.selectByIds(methodIds)) {
+            if (method == null
+                    || method.getId() == null
+                    || methodsById.putIfAbsent(method.getId(), method) != null) {
+                throw invalidRecipe();
+            }
+        }
+        if (!methodsById.keySet().equals(new LinkedHashSet<>(methodIds))) {
+            throw invalidRecipe();
+        }
+        return methodsById;
+    }
+
+    private BusinessException invalidRecipe() {
+        return new BusinessException(ErrorCode.DINNER_RECIPE_INVALID);
     }
 
     private List<DinnerMenuSelectionEntity> selections(Long menuId) {
@@ -321,5 +479,17 @@ public class DinnerMenuService {
     }
 
     private record MenuContext(DinnerHouseholdEntity household, DinnerMenuEntity menu) {
+    }
+
+    private record ValidatedRecipe(
+            DinnerRecipeEntity recipe,
+            RecipeMethodSummaryResponse method
+    ) {
+        long selectedVersion() {
+            return "SYSTEM".equals(recipe.getScope()) ? 1L : recipe.getVersion();
+        }
+    }
+
+    private record SelectionIdentity(Long recipeVersion, Long methodId) {
     }
 }

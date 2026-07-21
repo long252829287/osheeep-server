@@ -1,6 +1,7 @@
 package com.osheeep.server.dinner.menu;
 
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -12,6 +13,7 @@ import com.osheeep.server.TestUserMapperConfig;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.common.security.JwtService;
 import com.osheeep.server.dinner.menu.dto.TodayMenuResponse;
+import com.osheeep.server.dinner.menu.dto.MenuDishResponse;
 import com.osheeep.server.dinner.recipe.DinnerRecipeService;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodSummaryResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeResponse;
@@ -71,7 +73,7 @@ class DinnerMenuControllerTest {
                         "家常菜", "酸甜", 10, "HOUSEHOLD", 8L,
                         new RecipeMethodSummaryResponse(21L, "家常做法", "炒"),
                         List.of(), null)));
-        when(menuService.today(7L)).thenReturn(today("DRAFT", 4L, null));
+        when(menuService.today(7L)).thenReturn(todayWithHouseholdDish());
 
         mockMvc.perform(authenticated(get("/api/dinner/recipes")))
                 .andExpect(status().isOk())
@@ -82,7 +84,11 @@ class DinnerMenuControllerTest {
                 .andExpect(jsonPath("$.data[0].defaultMethod.steps").doesNotExist());
         mockMvc.perform(authenticated(get("/api/dinner/menus/today")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.version").value(4));
+                .andExpect(jsonPath("$.data.version").value(4))
+                .andExpect(jsonPath("$.data.dishes[0].scope").value("HOUSEHOLD"))
+                .andExpect(jsonPath("$.data.dishes[0].recipeVersion").value(8))
+                .andExpect(jsonPath("$.data.dishes[0].method.name").value("家常做法"))
+                .andExpect(jsonPath("$.data.dishes[0].method.steps").doesNotExist());
     }
 
     @Test
@@ -99,6 +105,7 @@ class DinnerMenuControllerTest {
                         .content("{\"recipeIds\":[1,2],\"version\":4}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(5));
+        verify(menuService).updateSelections(7L, List.of(1L, 2L), 4L);
         mockMvc.perform(authenticated(post("/api/dinner/menus/today/confirm"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":5,\"idempotencyKey\":\"00000000-0000-4000-8000-000000000021\"}"))
@@ -133,6 +140,18 @@ class DinnerMenuControllerTest {
         return new TodayMenuResponse(
                 31L, LocalDate.of(2026, 7, 11), status, version,
                 0, 0, 0, List.of(), List.of(), null, null, null, null, recordId);
+    }
+
+    private TodayMenuResponse todayWithHouseholdDish() {
+        return new TodayMenuResponse(
+                31L, LocalDate.of(2026, 7, 11), "DRAFT", 4L,
+                1, 0, 0, List.of(14L),
+                List.of(new MenuDishResponse(
+                        14L, "番茄炒蛋",
+                        "https://www.osheeep.com/media/recipes/family.webp",
+                        "家常菜", "酸甜", 10, "ME", "HOUSEHOLD", 8L,
+                        new RecipeMethodSummaryResponse(21L, "家常做法", "炒"))),
+                null, null, null, null, null);
     }
 
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder authenticated(
