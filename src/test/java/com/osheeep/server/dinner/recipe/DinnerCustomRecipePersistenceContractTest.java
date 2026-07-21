@@ -2,6 +2,7 @@ package com.osheeep.server.dinner.recipe;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeIngredientRow;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,5 +41,20 @@ class DinnerCustomRecipePersistenceContractTest {
         assertThat(discoverMethod)
                 .contains(".eq(DinnerRecipeEntity::getStatus, \"PUBLISHED\")")
                 .doesNotContain(".eq(DinnerRecipeEntity::getStatus, \"ACTIVE\")");
+    }
+
+    @Test
+    void ingredientJoinCarriesVisibilityMetadataIntoTheCanonicalRow() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/com/osheeep/server/dinner/recipe/mapper/"
+                        + "DinnerRecipeIngredientMapper.java"));
+
+        assertThat(source)
+                .contains("i.scope AS ingredientScope")
+                .contains("i.household_id AS ingredientHouseholdId")
+                .contains("i.status AS ingredientStatus");
+        assertThat(DinnerRecipeIngredientRow.class.getRecordComponents())
+                .extracting(component -> component.getName())
+                .contains("ingredientScope", "ingredientHouseholdId", "ingredientStatus");
     }
 }

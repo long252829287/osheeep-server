@@ -33,6 +33,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -70,7 +71,8 @@ class DinnerRecordSnapshotAssemblerTest {
         when(ingredientMapper.selectWithIngredientNames(List.of(1L, 14L))).thenReturn(List.of(
                 ingredient(14L, 202L, "葱", false, 1),
                 ingredient(1L, 102L, "盐", false, 0),
-                ingredient(14L, 201L, "鸡蛋", true, 0),
+                ingredient(14L, 201L, "鸡蛋", true, 0,
+                        "HOUSEHOLD", 70L, "ACTIVE"),
                 ingredient(1L, 101L, "番茄", true, 0)));
         when(methodMapper.selectByIds(List.of(21L))).thenReturn(List.of(
                 method(21L, 14L, "家常做法", "炒")));
@@ -200,6 +202,55 @@ class DinnerRecordSnapshotAssemblerTest {
 
         assertInvalid(() -> assembler.assemble(70L, List.of(
                 householdSelection(14L, 7L, 8L, 21L))));
+    }
+
+    @Test
+    void householdRecipeWithAnotherHouseholdsIngredientIsInvalid() {
+        DinnerRecipeEntity family = householdRecipe(14L, 70L, 8L, 2, 91L);
+        stubHouseholdAggregate(family,
+                List.of(ingredient(14L, 901L, "另一个家庭的食材", true, 0,
+                        "HOUSEHOLD", 71L, "ACTIVE")),
+                List.of(method(21L, 14L, "家常做法", "炒")),
+                List.of(step(301L, 21L, "翻炒", 0)),
+                Map.of(91L, approvedImage(91L)));
+
+        assertInvalid(() -> assembler.assemble(70L, List.of(
+                householdSelection(14L, 7L, 8L, 21L))));
+    }
+
+    @Test
+    void householdRecipeWithInactiveIngredientIsInvalid() {
+        DinnerRecipeEntity family = householdRecipe(14L, 70L, 8L, 2, 91L);
+        stubHouseholdAggregate(family,
+                List.of(ingredient(14L, 902L, "停用食材", true, 0,
+                        "SYSTEM", null, "INACTIVE")),
+                List.of(method(21L, 14L, "家常做法", "炒")),
+                List.of(step(301L, 21L, "翻炒", 0)),
+                Map.of(91L, approvedImage(91L)));
+
+        assertInvalid(() -> assembler.assemble(70L, List.of(
+                householdSelection(14L, 7L, 8L, 21L))));
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidSystemIngredientRows")
+    void systemRecipeIngredientMustBeActiveAndSystem(
+            DinnerRecipeIngredientRow invalidIngredient
+    ) {
+        DinnerRecipeEntity system = systemRecipe(1L, null);
+        when(recipeMapper.selectByIds(List.of(1L))).thenReturn(List.of(system));
+        when(ingredientMapper.selectWithIngredientNames(List.of(1L)))
+                .thenReturn(List.of(invalidIngredient));
+
+        assertInvalid(() -> assembler.assemble(70L, List.of(systemSelection(1L, 7L))));
+    }
+
+    private static Stream<DinnerRecipeIngredientRow> invalidSystemIngredientRows() {
+        return Stream.of(
+                ingredient(1L, 901L, "家庭食材", true, 0,
+                        "HOUSEHOLD", 70L, "ACTIVE"),
+                ingredient(1L, 902L, "停用系统食材", true, 0,
+                        "SYSTEM", null, "INACTIVE"));
     }
 
     @Test
@@ -338,6 +389,21 @@ class DinnerRecordSnapshotAssemblerTest {
     ) {
         return new DinnerRecipeIngredientRow(
                 recipeId, ingredientId, name, BigDecimal.ONE, "个", required, sortOrder);
+    }
+
+    private static DinnerRecipeIngredientRow ingredient(
+            Long recipeId,
+            Long ingredientId,
+            String name,
+            boolean required,
+            int sortOrder,
+            String ingredientScope,
+            Long ingredientHouseholdId,
+            String ingredientStatus
+    ) {
+        return new DinnerRecipeIngredientRow(
+                recipeId, ingredientId, name, BigDecimal.ONE, "个", required, sortOrder,
+                ingredientScope, ingredientHouseholdId, ingredientStatus);
     }
 
     private static DinnerRecipeMethodEntity method(

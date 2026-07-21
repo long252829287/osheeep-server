@@ -123,7 +123,7 @@ public final class DinnerRecordSnapshotAssembler {
                 : imageAssetService.findApprovedByIds(imageAssetIds);
 
         Map<Long, List<RecordIngredientSnapshotResponse>> ingredientsByRecipe =
-                mapIngredients(ingredientRows, new LinkedHashSet<>(recipeIds));
+                mapIngredients(ingredientRows, recipesById);
         Map<Long, List<RecordMethodStepSnapshotResponse>> stepsByMethod =
                 mapSteps(stepRows, new LinkedHashSet<>(methodIds));
         if (!imagesById.keySet().equals(new LinkedHashSet<>(imageAssetIds))) {
@@ -219,15 +219,18 @@ public final class DinnerRecordSnapshotAssembler {
 
     private Map<Long, List<RecordIngredientSnapshotResponse>> mapIngredients(
             List<DinnerRecipeIngredientRow> rows,
-            Set<Long> expectedRecipeIds
+            Map<Long, DinnerRecipeEntity> recipesById
     ) {
         Map<Long, Set<Long>> ingredientIdsByRecipe = new HashMap<>();
         Map<Long, List<RecordIngredientSnapshotResponse>> byRecipe = new HashMap<>();
         for (DinnerRecipeIngredientRow row : rows) {
+            DinnerRecipeEntity recipe = row == null || row.recipeId() == null
+                    ? null : recipesById.get(row.recipeId());
             if (row == null
                     || row.recipeId() == null
-                    || !expectedRecipeIds.contains(row.recipeId())
+                    || recipe == null
                     || row.ingredientId() == null
+                    || !ingredientVisibleToRecipe(recipe, row)
                     || !StringUtils.hasText(row.name())
                     || !StringUtils.hasText(row.unit())
                     || !validQuantity(row.quantity())
@@ -247,6 +250,26 @@ public final class DinnerRecordSnapshotAssembler {
                         .thenComparing(RecordIngredientSnapshotResponse::ingredientId))
                 .toList());
         return byRecipe;
+    }
+
+    private boolean ingredientVisibleToRecipe(
+            DinnerRecipeEntity recipe,
+            DinnerRecipeIngredientRow row
+    ) {
+        if (!"ACTIVE".equals(row.ingredientStatus())) {
+            return false;
+        }
+        boolean systemIngredient = "SYSTEM".equals(row.ingredientScope())
+                && row.ingredientHouseholdId() == null;
+        if ("SYSTEM".equals(recipe.getScope())) {
+            return systemIngredient;
+        }
+        boolean sameHouseholdIngredient = "HOUSEHOLD".equals(row.ingredientScope())
+                && recipe.getHouseholdId() != null
+                && Objects.equals(
+                        recipe.getHouseholdId(), row.ingredientHouseholdId());
+        return "HOUSEHOLD".equals(recipe.getScope())
+                && (systemIngredient || sameHouseholdIngredient);
     }
 
     private Map<Long, List<RecordMethodStepSnapshotResponse>> mapSteps(

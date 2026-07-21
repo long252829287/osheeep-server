@@ -6,6 +6,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.osheeep.server.dinner.image.DinnerImageAssetService;
@@ -25,14 +27,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 
 @ExtendWith(MockitoExtension.class)
 class DinnerRecipeCatalogAssemblerTest {
@@ -62,7 +65,8 @@ class DinnerRecipeCatalogAssemblerTest {
         when(ingredientMapper.selectWithIngredientNames(List.of(1L, 14L))).thenReturn(List.of(
                 ingredient(14L, 102L, "鸡蛋", false, 1),
                 ingredient(1L, 101L, "鸡蛋", true, 0),
-                ingredient(14L, 101L, "番茄", true, 0)));
+                ingredient(14L, 101L, "番茄", true, 0,
+                        "HOUSEHOLD", 70L, "ACTIVE")));
         when(methodMapper.selectList(any())).thenReturn(List.of(
                 method(21L, 14L, "家常做法", "炒")));
         when(stepMapper.selectList(any())).thenReturn(List.of(
@@ -128,6 +132,86 @@ class DinnerRecipeCatalogAssemblerTest {
                 .thenReturn(Map.of(91L, approvedImage(91L)));
 
         assertThat(assembler.assemble(List.of(household))).isEmpty();
+    }
+
+    @Test
+    void omitsWholeHouseholdAggregateForAnotherHouseholdsIngredientWithoutLoggingItsName() {
+        String privateIngredientName = "另一个家庭的私有食材";
+        DinnerRecipeEntity system = systemRecipe(1L);
+        DinnerRecipeEntity household = householdRecipe(14L, 70L, 8L, 91L);
+        when(ingredientMapper.selectWithIngredientNames(List.of(1L, 14L))).thenReturn(List.of(
+                ingredient(1L, 101L, "番茄", true, 0),
+                ingredient(14L, 101L, "番茄", true, 0),
+                ingredient(14L, 901L, privateIngredientName, true, 1,
+                        "HOUSEHOLD", 71L, "ACTIVE")));
+        when(methodMapper.selectList(any())).thenReturn(List.of(
+                method(21L, 14L, "家常做法", "炒")));
+        when(stepMapper.selectList(any())).thenReturn(List.of(
+                step(31L, 21L, "翻炒", 0)));
+        when(imageAssetService.findApprovedByIds(List.of(91L)))
+                .thenReturn(Map.of(91L, approvedImage(91L)));
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(
+                        DinnerRecipeCatalogAssembler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        Map<Long, DinnerRecipeCatalogAssembler.CatalogEntry> entries;
+        try {
+            entries = assembler.assemble(List.of(system, household));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(entries).containsOnlyKeys(1L);
+        assertThat(entries.values().stream()
+                .flatMap(entry -> entry.ingredients().stream())
+                .map(RecipeIngredientResponse::name)
+                .toList()).doesNotContain(privateIngredientName);
+        assertThat(appender.list).extracting(ILoggingEvent::getFormattedMessage)
+                .anySatisfy(message -> assertThat(message)
+                        .contains("recipeId=14", "ingredientId=901", "ingredientHouseholdId=71"))
+                .allSatisfy(message -> assertThat(message)
+                        .doesNotContain(privateIngredientName));
+    }
+
+    @Test
+    void omitsWholeHouseholdAggregateForInactiveIngredient() {
+        DinnerRecipeEntity household = householdRecipe(14L, 70L, 8L, 91L);
+        when(ingredientMapper.selectWithIngredientNames(List.of(14L))).thenReturn(List.of(
+                ingredient(14L, 101L, "番茄", true, 0),
+                ingredient(14L, 102L, "停用食材", false, 1,
+                        "SYSTEM", null, "INACTIVE")));
+        when(methodMapper.selectList(any())).thenReturn(List.of(
+                method(21L, 14L, "家常做法", "炒")));
+        when(stepMapper.selectList(any())).thenReturn(List.of(
+                step(31L, 21L, "翻炒", 0)));
+        when(imageAssetService.findApprovedByIds(List.of(91L)))
+                .thenReturn(Map.of(91L, approvedImage(91L)));
+
+        assertThat(assembler.assemble(List.of(household))).isEmpty();
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidSystemIngredientRows")
+    void omitsSystemAggregateForNonSystemOrInactiveIngredient(
+            DinnerRecipeIngredientRow invalidIngredient
+    ) {
+        DinnerRecipeEntity system = systemRecipe(1L);
+        when(ingredientMapper.selectWithIngredientNames(List.of(1L)))
+                .thenReturn(List.of(invalidIngredient));
+
+        assertThat(assembler.assemble(List.of(system))).isEmpty();
+    }
+
+    private static Stream<DinnerRecipeIngredientRow> invalidSystemIngredientRows() {
+        return Stream.of(
+                ingredient(1L, 901L, "家庭食材", true, 0,
+                        "HOUSEHOLD", 70L, "ACTIVE"),
+                ingredient(1L, 902L, "停用系统食材", true, 0,
+                        "SYSTEM", null, "INACTIVE"));
     }
 
     private static Stream<DamagedAggregateFixture> damagedPublishedHouseholdAggregates() {
@@ -213,6 +297,21 @@ class DinnerRecipeCatalogAssemblerTest {
     ) {
         return new DinnerRecipeIngredientRow(
                 recipeId, ingredientId, name, BigDecimal.ONE, "个", required, sortOrder);
+    }
+
+    private static DinnerRecipeIngredientRow ingredient(
+            Long recipeId,
+            Long ingredientId,
+            String name,
+            boolean required,
+            int sortOrder,
+            String ingredientScope,
+            Long ingredientHouseholdId,
+            String ingredientStatus
+    ) {
+        return new DinnerRecipeIngredientRow(
+                recipeId, ingredientId, name, BigDecimal.ONE, "个", required, sortOrder,
+                ingredientScope, ingredientHouseholdId, ingredientStatus);
     }
 
     private static DinnerRecipeMethodEntity method(

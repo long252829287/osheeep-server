@@ -64,8 +64,11 @@ public final class DinnerRecipeCatalogAssembler {
                 .map(DinnerRecipeEntity::getId)
                 .distinct()
                 .toList();
-        Map<Long, List<RecipeIngredientResponse>> ingredientsByRecipe =
-                loadIngredients(recipeIds);
+        Map<Long, DinnerRecipeEntity> recipesById = new LinkedHashMap<>();
+        for (DinnerRecipeEntity recipe : recipes) {
+            recipesById.putIfAbsent(recipe.getId(), recipe);
+        }
+        IngredientData ingredientData = loadIngredients(recipeIds, recipesById);
 
         List<Long> householdRecipeIds = recipes.stream()
                 .filter(recipe -> "HOUSEHOLD".equals(recipe.getScope()))
@@ -77,8 +80,12 @@ public final class DinnerRecipeCatalogAssembler {
 
         Map<Long, CatalogEntry> entries = new LinkedHashMap<>();
         for (DinnerRecipeEntity recipe : recipes) {
+            if (ingredientData.invalidRecipeIds().contains(recipe.getId())) {
+                continue;
+            }
             List<RecipeIngredientResponse> ingredients = List.copyOf(
-                    ingredientsByRecipe.getOrDefault(recipe.getId(), List.of()));
+                    ingredientData.ingredientsByRecipe()
+                            .getOrDefault(recipe.getId(), List.of()));
             if ("SYSTEM".equals(recipe.getScope())) {
                 entries.putIfAbsent(recipe.getId(), new CatalogEntry(
                         recipe, recipe.getImagePath(), ingredients, null));
@@ -97,8 +104,43 @@ public final class DinnerRecipeCatalogAssembler {
         return Map.copyOf(entries);
     }
 
-    private Map<Long, List<RecipeIngredientResponse>> loadIngredients(List<Long> recipeIds) {
-        return ingredientMapper.selectWithIngredientNames(recipeIds).stream()
+    private IngredientData loadIngredients(
+            List<Long> recipeIds,
+            Map<Long, DinnerRecipeEntity> recipesById
+    ) {
+        List<DinnerRecipeIngredientRow> rows =
+                ingredientMapper.selectWithIngredientNames(recipeIds);
+        Set<Long> invalidRecipeIds = new HashSet<>();
+        for (DinnerRecipeIngredientRow row : rows) {
+            if (row == null || row.recipeId() == null) {
+                invalidRecipeIds.addAll(recipeIds);
+                LOGGER.warn(
+                        "Omitting recipe catalog entries for unassociated ingredient row "
+                                + "recipeIds={}, ingredientId={}",
+                        recipeIds,
+                        row == null ? null : row.ingredientId());
+                continue;
+            }
+            DinnerRecipeEntity recipe = recipesById.get(row.recipeId());
+            if (ingredientVisibleToRecipe(recipe, row)) {
+                continue;
+            }
+            if (invalidRecipeIds.add(row.recipeId())) {
+                LOGGER.warn(
+                        "Omitting recipe catalog entry for invalid ingredient visibility "
+                                + "recipeId={}, recipeScope={}, recipeHouseholdId={}, "
+                                + "ingredientId={}, ingredientScope={}, "
+                                + "ingredientHouseholdId={}, ingredientStatus={}",
+                        row.recipeId(), recipe == null ? null : recipe.getScope(),
+                        recipe == null ? null : recipe.getHouseholdId(), row.ingredientId(),
+                        row.ingredientScope(), row.ingredientHouseholdId(),
+                        row.ingredientStatus());
+            }
+        }
+
+        Map<Long, List<RecipeIngredientResponse>> ingredientsByRecipe = rows.stream()
+                .filter(Objects::nonNull)
+                .filter(row -> !invalidRecipeIds.contains(row.recipeId()))
                 .sorted(Comparator.comparing(DinnerRecipeIngredientRow::recipeId)
                         .thenComparingInt(DinnerRecipeIngredientRow::sortOrder))
                 .collect(Collectors.groupingBy(
@@ -108,6 +150,28 @@ public final class DinnerRecipeCatalogAssembler {
                                         row.ingredientId(), row.name(), row.quantity(), row.unit(),
                                         row.required(), row.sortOrder()),
                                 Collectors.toList())));
+        return new IngredientData(
+                ingredientsByRecipe, Set.copyOf(invalidRecipeIds));
+    }
+
+    private boolean ingredientVisibleToRecipe(
+            DinnerRecipeEntity recipe,
+            DinnerRecipeIngredientRow row
+    ) {
+        if (recipe == null || !"ACTIVE".equals(row.ingredientStatus())) {
+            return false;
+        }
+        boolean systemIngredient = "SYSTEM".equals(row.ingredientScope())
+                && row.ingredientHouseholdId() == null;
+        if ("SYSTEM".equals(recipe.getScope())) {
+            return systemIngredient;
+        }
+        boolean sameHouseholdIngredient = "HOUSEHOLD".equals(row.ingredientScope())
+                && recipe.getHouseholdId() != null
+                && Objects.equals(
+                        recipe.getHouseholdId(), row.ingredientHouseholdId());
+        return "HOUSEHOLD".equals(recipe.getScope())
+                && (systemIngredient || sameHouseholdIngredient);
     }
 
     private MethodData loadMethods(List<Long> householdRecipeIds) {
@@ -229,6 +293,12 @@ public final class DinnerRecipeCatalogAssembler {
             Map<Long, DinnerRecipeMethodEntity> methodsByRecipe,
             Set<Long> duplicateRecipeIds,
             Map<Long, List<RecipeMethodStepResponse>> stepsByMethod
+    ) {
+    }
+
+    private record IngredientData(
+            Map<Long, List<RecipeIngredientResponse>> ingredientsByRecipe,
+            Set<Long> invalidRecipeIds
     ) {
     }
 }

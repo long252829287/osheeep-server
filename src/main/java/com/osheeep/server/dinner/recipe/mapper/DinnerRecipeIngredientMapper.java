@@ -18,7 +18,10 @@ public interface DinnerRecipeIngredientMapper extends BaseMapper<DinnerRecipeIng
                    ri.quantity AS quantity,
                    ri.unit AS unit,
                    ri.is_required AS required,
-                   ri.sort_order AS sortOrder
+                   ri.sort_order AS sortOrder,
+                   i.scope AS ingredientScope,
+                   i.household_id AS ingredientHouseholdId,
+                   i.status AS ingredientStatus
             FROM dinner_recipe_ingredients ri
             JOIN dinner_ingredients i ON i.id = ri.ingredient_id
             WHERE ri.recipe_id IN
