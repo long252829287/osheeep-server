@@ -80,6 +80,14 @@ class DinnerRecordSnapshotJsonCodecTest {
     @ValueSource(strings = {
             "[{}]",
             "[null]",
+            "[{\"instruction\":\"翻炒\"}]",
+            "[{\"instruction\":7,\"sortOrder\":0}]",
+            "[{\"instruction\":\"翻炒\",\"sortOrder\":\"0\"}]",
+            "[{\"instruction\":\"翻炒\",\"sortOrder\":0.5}]",
+            "[{\"instruction\":\"翻炒\",\"sortOrder\":null}]",
+            "[{\"instruction\":\"翻炒\",\"sortOrder\":0,\"extra\":true}]",
+            "{\"instruction\":\"翻炒\",\"sortOrder\":0}",
+            "[[\"翻炒\",0]]",
             "[{\"instruction\":\"  \",\"sortOrder\":0}]",
             "[{\"instruction\":\"翻炒\",\"sortOrder\":-1}]"
     })
@@ -91,6 +99,28 @@ class DinnerRecordSnapshotJsonCodecTest {
     @ValueSource(strings = {
             "[{}]",
             "[null]",
+            "[{\"ingredientId\":1,\"name\":\"鸡蛋\","
+                    + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0}]",
+            "[{\"ingredientId\":1,\"name\":\"鸡蛋\",\"quantity\":null,"
+                    + "\"unit\":\"枚\",\"sortOrder\":0}]",
+            "[{\"ingredientId\":1,\"name\":\"鸡蛋\",\"quantity\":null,"
+                    + "\"unit\":\"枚\",\"required\":true}]",
+            "[{\"ingredientId\":\"1\",\"name\":\"鸡蛋\",\"quantity\":null,"
+                    + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0}]",
+            "[{\"ingredientId\":1,\"name\":7,\"quantity\":null,"
+                    + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0}]",
+            "[{\"ingredientId\":1,\"name\":\"鸡蛋\",\"quantity\":\"1\","
+                    + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0}]",
+            "[{\"ingredientId\":1,\"name\":\"鸡蛋\",\"quantity\":null,"
+                    + "\"unit\":7,\"required\":true,\"sortOrder\":0}]",
+            "[{\"ingredientId\":1,\"name\":\"鸡蛋\",\"quantity\":null,"
+                    + "\"unit\":\"枚\",\"required\":\"true\",\"sortOrder\":0}]",
+            "[{\"ingredientId\":1,\"name\":\"鸡蛋\",\"quantity\":null,"
+                    + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0.5}]",
+            "[{\"ingredientId\":1,\"name\":\"鸡蛋\",\"quantity\":null,"
+                    + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0,"
+                    + "\"extra\":true}]",
+            "[1]",
             "[{\"ingredientId\":0,\"name\":\"鸡蛋\",\"quantity\":null,"
                     + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0}]",
             "[{\"ingredientId\":1,\"name\":\"  \",\"quantity\":null,"

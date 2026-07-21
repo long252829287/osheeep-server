@@ -2,6 +2,8 @@ package com.osheeep.server.dinner.record;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.osheeep.server.dinner.record.dto.RecordIngredientSnapshotResponse;
 import com.osheeep.server.dinner.record.dto.RecordMethodStepSnapshotResponse;
@@ -48,11 +50,15 @@ public final class DinnerRecordSnapshotJsonCodec {
     }
 
     public List<RecordMethodStepSnapshotResponse> readSteps(String json) {
-        return read(json, STEP_LIST, this::validateSteps);
+        return read(json, STEP_LIST, this::validateStepJson, this::validateSteps);
     }
 
     public List<RecordIngredientSnapshotResponse> readIngredients(String json) {
-        return read(json, INGREDIENT_LIST, this::validateIngredients);
+        return read(
+                json,
+                INGREDIENT_LIST,
+                this::validateIngredientJson,
+                this::validateIngredients);
     }
 
     private String write(List<?> values) {
@@ -66,12 +72,17 @@ public final class DinnerRecordSnapshotJsonCodec {
     private <T> List<T> read(
             String json,
             TypeReference<List<T>> type,
+            Consumer<JsonNode> jsonValidator,
             Consumer<List<T>> validator
     ) {
         if (!StringUtils.hasText(json)) {
             return List.of();
         }
         try {
+            JsonNode tree = objectMapper.reader()
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(json);
+            jsonValidator.accept(tree);
             List<T> values = objectMapper.readValue(json, type);
             if (values == null) {
                 throw invalidJson();
@@ -85,6 +96,59 @@ public final class DinnerRecordSnapshotJsonCodec {
 
     private <T> List<T> safe(List<T> values) {
         return values == null ? List.of() : values;
+    }
+
+    private void validateStepJson(JsonNode tree) {
+        if (tree == null || !tree.isArray()) {
+            throw invalidJson();
+        }
+        for (JsonNode value : tree) {
+            if (!exactObject(value, "instruction", "sortOrder")
+                    || !value.get("instruction").isTextual()
+                    || !value.get("sortOrder").isIntegralNumber()
+                    || !value.get("sortOrder").canConvertToInt()) {
+                throw invalidJson();
+            }
+        }
+    }
+
+    private void validateIngredientJson(JsonNode tree) {
+        if (tree == null || !tree.isArray()) {
+            throw invalidJson();
+        }
+        for (JsonNode value : tree) {
+            if (!exactObject(
+                            value,
+                            "ingredientId",
+                            "name",
+                            "quantity",
+                            "unit",
+                            "required",
+                            "sortOrder")
+                    || !value.get("ingredientId").isIntegralNumber()
+                    || !value.get("ingredientId").canConvertToLong()
+                    || !value.get("name").isTextual()
+                    || !(value.get("quantity").isNull()
+                            || value.get("quantity").isNumber())
+                    || !value.get("unit").isTextual()
+                    || !value.get("required").isBoolean()
+                    || !value.get("sortOrder").isIntegralNumber()
+                    || !value.get("sortOrder").canConvertToInt()) {
+                throw invalidJson();
+            }
+        }
+    }
+
+    private boolean exactObject(JsonNode value, String... fields) {
+        if (value == null || !value.isObject() || value.size() != fields.length) {
+            return false;
+        }
+        for (String field : fields) {
+            if (!value.has(field)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void validateSteps(List<RecordMethodStepSnapshotResponse> values) {
