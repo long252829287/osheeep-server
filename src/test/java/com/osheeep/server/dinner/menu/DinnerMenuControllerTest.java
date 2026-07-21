@@ -21,7 +21,11 @@ import com.osheeep.server.dinner.record.DinnerRecordService;
 import com.osheeep.server.dinner.record.dto.CompleteMenuResponse;
 import com.osheeep.server.dinner.record.dto.RecordDetailResponse;
 import com.osheeep.server.dinner.record.dto.RecordDishResponse;
+import com.osheeep.server.dinner.record.dto.RecordIngredientSnapshotResponse;
+import com.osheeep.server.dinner.record.dto.RecordMethodSnapshotResponse;
+import com.osheeep.server.dinner.record.dto.RecordMethodStepSnapshotResponse;
 import com.osheeep.server.dinner.record.dto.RecordSummaryResponse;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -126,14 +130,27 @@ class DinnerMenuControllerTest {
         when(recordService.detail(7L, 91L)).thenReturn(new RecordDetailResponse(
                 91L, LocalDate.of(2026, 7, 11), 7L,
                 Instant.parse("2026-07-11T11:00:00Z"),
-                List.of(new RecordDishResponse(1L, "番茄炒蛋", null, "家常菜", "酸甜", 10, "BOTH"))));
+                List.of(new RecordDishResponse(
+                        14L, "番茄炒蛋", null, "家常菜", "酸甜", 10, "BOTH",
+                        "HOUSEHOLD", 8L, 2,
+                        new RecordMethodSnapshotResponse(
+                                21L, "家常做法", "炒",
+                                List.of(new RecordMethodStepSnapshotResponse("翻炒", 0))),
+                        List.of(new RecordIngredientSnapshotResponse(
+                                101L, "鸡蛋", new BigDecimal("2.000"), "枚", true, 0))))));
 
         mockMvc.perform(authenticated(get("/api/dinner/records")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].dishCount").value(1));
         mockMvc.perform(authenticated(get("/api/dinner/records/91")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.dishes[0].source").value("BOTH"));
+                .andExpect(jsonPath("$.data.dishes[0].source").value("BOTH"))
+                .andExpect(jsonPath("$.data.dishes[0].scope").value("HOUSEHOLD"))
+                .andExpect(jsonPath("$.data.dishes[0].recipeVersion").value(8))
+                .andExpect(jsonPath("$.data.dishes[0].servings").value(2))
+                .andExpect(jsonPath("$.data.dishes[0].method.steps[0].instruction")
+                        .value("翻炒"))
+                .andExpect(jsonPath("$.data.dishes[0].ingredients[0].name").value("鸡蛋"));
     }
 
     private TodayMenuResponse today(String status, Long version, Long recordId) {

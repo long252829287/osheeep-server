@@ -1,11 +1,14 @@
 package com.osheeep.server.dinner.record;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
@@ -57,6 +60,7 @@ class DinnerRecordServiceTest {
         service = new DinnerRecordService(
                 householdMapper, memberMapper, menuMapper, selectionMapper, actionMapper,
                 recipeMapper, recordMapper, snapshotMapper, menuService,
+                new DinnerRecordSnapshotJsonCodec(new ObjectMapper()),
                 new BusinessDateResolver(), clock);
     }
 
@@ -118,7 +122,7 @@ class DinnerRecordServiceTest {
     }
 
     @Test
-    void recordDetailCalculatesSnapshotSourceForTheCurrentUser() {
+    void legacyRecordDetailNormalizesNewFieldsWithoutCurrentRecipeLookup() {
         when(memberMapper.selectOne(any())).thenReturn(member());
         DinnerCookingRecordEntity record = record(91L, 31L);
         record.setHouseholdId(11L);
@@ -137,9 +141,75 @@ class DinnerRecordServiceTest {
 
         var result = service.detail(7L, 91L);
 
-        assertThat(result.dishes()).singleElement()
-                .extracting(item -> item.source())
-                .isEqualTo("BOTH");
+        assertThat(result.dishes()).singleElement().satisfies(item -> {
+            assertThat(item.source()).isEqualTo("BOTH");
+            assertThat(item.scope()).isEqualTo("SYSTEM");
+            assertThat(item.recipeVersion()).isEqualTo(1L);
+            assertThat(item.servings()).isNull();
+            assertThat(item.method()).isNull();
+            assertThat(item.ingredients()).isEmpty();
+            assertThatThrownBy(() -> item.ingredients().clear())
+                    .isInstanceOf(UnsupportedOperationException.class);
+        });
+        verifyNoInteractions(recipeMapper);
+    }
+
+    @Test
+    void householdRecordDetailReadsMethodAndIngredientsOnlyFromStoredSnapshot() {
+        when(memberMapper.selectOne(any())).thenReturn(member());
+        DinnerCookingRecordEntity record = record(91L, 31L);
+        record.setHouseholdId(11L);
+        when(recordMapper.selectById(91L)).thenReturn(record);
+        DinnerRecordDishSnapshotEntity snapshot = snapshot();
+        snapshot.setRecipeScope("HOUSEHOLD");
+        snapshot.setRecipeVersion(8L);
+        snapshot.setServings(2);
+        snapshot.setMethodId(21L);
+        snapshot.setMethodName("家常做法");
+        snapshot.setCookingStyle("炒");
+        snapshot.setMethodStepsJson(
+                "[{\"instruction\":\"盛盘\",\"sortOrder\":1},"
+                        + "{\"instruction\":\"翻炒\",\"sortOrder\":0}]");
+        snapshot.setIngredientsJson(
+                "[{\"ingredientId\":101,\"name\":\"鸡蛋\",\"quantity\":null,"
+                        + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0}]");
+        when(snapshotMapper.selectList(any())).thenReturn(List.of(snapshot));
+
+        var dish = service.detail(7L, 91L).dishes().getFirst();
+
+        assertThat(dish.scope()).isEqualTo("HOUSEHOLD");
+        assertThat(dish.recipeVersion()).isEqualTo(8L);
+        assertThat(dish.method().id()).isEqualTo(21L);
+        assertThat(dish.method().steps()).extracting(step -> step.sortOrder())
+                .containsExactly(1, 0);
+        assertThat(dish.ingredients()).singleElement()
+                .satisfies(ingredient -> assertThat(ingredient.quantity()).isNull());
+        verifyNoInteractions(recipeMapper);
+    }
+
+    @Test
+    void partialMethodMetadataFailsSafely() {
+        DinnerRecordDishSnapshotEntity snapshot = snapshot();
+        snapshot.setMethodId(21L);
+        stubDetail(snapshot);
+
+        assertThatThrownBy(() -> service.detail(7L, 91L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Incomplete dinner record method snapshot");
+    }
+
+    @Test
+    void methodMetadataWithNoStepsFailsSafely() {
+        DinnerRecordDishSnapshotEntity snapshot = snapshot();
+        snapshot.setMethodId(21L);
+        snapshot.setMethodName("家常做法");
+        snapshot.setCookingStyle("炒");
+        snapshot.setMethodStepsJson("[]");
+        stubDetail(snapshot);
+
+        assertThatThrownBy(() -> service.detail(7L, 91L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Incomplete dinner record method snapshot");
     }
 
     private void stubContext(DinnerMenuEntity menu) {
@@ -198,6 +268,26 @@ class DinnerRecordServiceTest {
         recipe.setFlavor("鲜香");
         recipe.setEstimatedMinutes(10);
         return recipe;
+    }
+
+    private DinnerRecordDishSnapshotEntity snapshot() {
+        DinnerRecordDishSnapshotEntity snapshot = new DinnerRecordDishSnapshotEntity();
+        snapshot.setRecipeId(14L);
+        snapshot.setName("番茄炒蛋");
+        snapshot.setCategory("家常菜");
+        snapshot.setFlavor("酸甜");
+        snapshot.setEstimatedMinutes(10);
+        snapshot.setSelectedByUserIds("[7,8]");
+        snapshot.setSortOrder(0);
+        return snapshot;
+    }
+
+    private void stubDetail(DinnerRecordDishSnapshotEntity snapshot) {
+        when(memberMapper.selectOne(any())).thenReturn(member());
+        DinnerCookingRecordEntity record = record(91L, 31L);
+        record.setHouseholdId(11L);
+        when(recordMapper.selectById(91L)).thenReturn(record);
+        when(snapshotMapper.selectList(any())).thenReturn(List.of(snapshot));
     }
 
     private TodayMenuResponse today(Long recordId) {

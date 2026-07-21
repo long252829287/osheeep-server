@@ -20,6 +20,9 @@ import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
 import com.osheeep.server.dinner.record.dto.CompleteMenuResponse;
 import com.osheeep.server.dinner.record.dto.RecordDetailResponse;
 import com.osheeep.server.dinner.record.dto.RecordDishResponse;
+import com.osheeep.server.dinner.record.dto.RecordIngredientSnapshotResponse;
+import com.osheeep.server.dinner.record.dto.RecordMethodSnapshotResponse;
+import com.osheeep.server.dinner.record.dto.RecordMethodStepSnapshotResponse;
 import com.osheeep.server.dinner.record.dto.RecordSummaryResponse;
 import com.osheeep.server.dinner.record.entity.DinnerCookingRecordEntity;
 import com.osheeep.server.dinner.record.entity.DinnerRecordDishSnapshotEntity;
@@ -42,6 +45,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 @Service
 public class DinnerRecordService {
@@ -55,6 +59,7 @@ public class DinnerRecordService {
     private final DinnerCookingRecordMapper recordMapper;
     private final DinnerRecordDishSnapshotMapper snapshotMapper;
     private final DinnerMenuService menuService;
+    private final DinnerRecordSnapshotJsonCodec snapshotJsonCodec;
     private final BusinessDateResolver businessDateResolver;
     private final Clock clock;
 
@@ -69,11 +74,12 @@ public class DinnerRecordService {
             DinnerCookingRecordMapper recordMapper,
             DinnerRecordDishSnapshotMapper snapshotMapper,
             DinnerMenuService menuService,
+            DinnerRecordSnapshotJsonCodec snapshotJsonCodec,
             BusinessDateResolver businessDateResolver
     ) {
         this(householdMapper, memberMapper, menuMapper, selectionMapper, actionMapper,
                 recipeMapper, recordMapper, snapshotMapper, menuService,
-                businessDateResolver, Clock.systemUTC());
+                snapshotJsonCodec, businessDateResolver, Clock.systemUTC());
     }
 
     DinnerRecordService(
@@ -86,6 +92,7 @@ public class DinnerRecordService {
             DinnerCookingRecordMapper recordMapper,
             DinnerRecordDishSnapshotMapper snapshotMapper,
             DinnerMenuService menuService,
+            DinnerRecordSnapshotJsonCodec snapshotJsonCodec,
             BusinessDateResolver businessDateResolver,
             Clock clock
     ) {
@@ -98,6 +105,7 @@ public class DinnerRecordService {
         this.recordMapper = recordMapper;
         this.snapshotMapper = snapshotMapper;
         this.menuService = menuService;
+        this.snapshotJsonCodec = snapshotJsonCodec;
         this.businessDateResolver = businessDateResolver;
         this.clock = clock;
     }
@@ -215,10 +223,7 @@ public class DinnerRecordService {
                                 .eq(DinnerRecordDishSnapshotEntity::getRecordId, recordId)
                                 .orderByAsc(DinnerRecordDishSnapshotEntity::getSortOrder))
                 .stream()
-                .map(snapshot -> new RecordDishResponse(
-                        snapshot.getRecipeId(), snapshot.getName(), snapshot.getImagePath(),
-                        snapshot.getCategory(), snapshot.getFlavor(), snapshot.getEstimatedMinutes(),
-                        source(snapshot.getSelectedByUserIds(), userId)))
+                .map(snapshot -> recordDish(snapshot, userId))
                 .toList();
         return new RecordDetailResponse(
                 record.getId(), record.getRecordDate(), record.getCompletedBy(),
@@ -259,6 +264,39 @@ public class DinnerRecordService {
             return "BOTH";
         }
         return selectors.contains(currentUserId) ? "ME" : "PARTNER";
+    }
+
+    private RecordDishResponse recordDish(
+            DinnerRecordDishSnapshotEntity snapshot,
+            Long currentUserId
+    ) {
+        String scope = snapshot.getRecipeScope() == null
+                ? "SYSTEM" : snapshot.getRecipeScope();
+        Long recipeVersion = snapshot.getRecipeVersion() == null
+                ? 1L : snapshot.getRecipeVersion();
+        List<RecordMethodStepSnapshotResponse> steps =
+                snapshotJsonCodec.readSteps(snapshot.getMethodStepsJson());
+        boolean methodAbsent = snapshot.getMethodId() == null
+                && snapshot.getMethodName() == null
+                && snapshot.getCookingStyle() == null
+                && steps.isEmpty();
+        if (!methodAbsent && (snapshot.getMethodId() == null
+                || !StringUtils.hasText(snapshot.getMethodName())
+                || !StringUtils.hasText(snapshot.getCookingStyle())
+                || steps.isEmpty())) {
+            throw new IllegalStateException("Incomplete dinner record method snapshot");
+        }
+        RecordMethodSnapshotResponse method = methodAbsent ? null
+                : new RecordMethodSnapshotResponse(
+                        snapshot.getMethodId(), snapshot.getMethodName(),
+                        snapshot.getCookingStyle(), steps);
+        List<RecordIngredientSnapshotResponse> ingredients =
+                snapshotJsonCodec.readIngredients(snapshot.getIngredientsJson());
+        return new RecordDishResponse(
+                snapshot.getRecipeId(), snapshot.getName(), snapshot.getImagePath(),
+                snapshot.getCategory(), snapshot.getFlavor(), snapshot.getEstimatedMinutes(),
+                source(snapshot.getSelectedByUserIds(), currentUserId), scope, recipeVersion,
+                snapshot.getServings(), method, ingredients);
     }
 
     private Instant instant(LocalDateTime value) {
