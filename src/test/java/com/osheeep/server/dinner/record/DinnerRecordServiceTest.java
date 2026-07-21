@@ -39,9 +39,14 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -263,19 +268,7 @@ class DinnerRecordServiceTest {
         DinnerCookingRecordEntity record = record(91L, 31L);
         record.setHouseholdId(11L);
         when(recordMapper.selectById(91L)).thenReturn(record);
-        DinnerRecordDishSnapshotEntity snapshot = snapshot();
-        snapshot.setRecipeScope("HOUSEHOLD");
-        snapshot.setRecipeVersion(8L);
-        snapshot.setServings(2);
-        snapshot.setMethodId(21L);
-        snapshot.setMethodName("家常做法");
-        snapshot.setCookingStyle("炒");
-        snapshot.setMethodStepsJson(
-                "[{\"instruction\":\"盛盘\",\"sortOrder\":1},"
-                        + "{\"instruction\":\"翻炒\",\"sortOrder\":0}]");
-        snapshot.setIngredientsJson(
-                "[{\"ingredientId\":101,\"name\":\"鸡蛋\",\"quantity\":null,"
-                        + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0}]");
+        DinnerRecordDishSnapshotEntity snapshot = householdSnapshot();
         when(snapshotMapper.selectList(any())).thenReturn(List.of(snapshot));
 
         var dish = service.detail(7L, 91L).dishes().getFirst();
@@ -292,27 +285,152 @@ class DinnerRecordServiceTest {
 
     @Test
     void partialMethodMetadataFailsSafely() {
-        DinnerRecordDishSnapshotEntity snapshot = snapshot();
-        snapshot.setMethodId(21L);
+        DinnerRecordDishSnapshotEntity snapshot = householdSnapshot();
+        snapshot.setMethodName(null);
         stubDetail(snapshot);
 
         assertThatThrownBy(() -> service.detail(7L, 91L))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Incomplete dinner record method snapshot");
+                .hasMessage("Incomplete dinner record dish snapshot");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("incompleteHouseholdSnapshots")
+    void incompleteExplicitHouseholdSnapshotFailsSafely(SnapshotCase snapshotCase) {
+        DinnerRecordDishSnapshotEntity snapshot = householdSnapshot();
+        snapshotCase.mutation().accept(snapshot);
+        stubDetail(snapshot);
+
+        assertThatThrownBy(() -> service.detail(7L, 91L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Incomplete dinner record dish snapshot");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("incompleteSystemSnapshots")
+    void incompleteExplicitSystemSnapshotFailsSafely(SnapshotCase snapshotCase) {
+        DinnerRecordDishSnapshotEntity snapshot = systemSnapshot();
+        snapshotCase.mutation().accept(snapshot);
+        stubDetail(snapshot);
+
+        assertThatThrownBy(() -> service.detail(7L, 91L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Incomplete dinner record dish snapshot");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("scopeLessRowsWithV7Data")
+    void scopeLessRowIsLegacyOnlyWhenEveryV7FieldIsEmpty(SnapshotCase snapshotCase) {
+        DinnerRecordDishSnapshotEntity snapshot = snapshot();
+        snapshotCase.mutation().accept(snapshot);
+        stubDetail(snapshot);
+
+        assertThatThrownBy(() -> service.detail(7L, 91L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Incomplete dinner record dish snapshot");
     }
 
     @Test
-    void methodMetadataWithNoStepsFailsSafely() {
-        DinnerRecordDishSnapshotEntity snapshot = snapshot();
-        snapshot.setMethodId(21L);
-        snapshot.setMethodName("家常做法");
-        snapshot.setCookingStyle("炒");
-        snapshot.setMethodStepsJson("[]");
+    void explicitSystemSnapshotReturnsStoredIngredientsWithNullServings() {
+        DinnerRecordDishSnapshotEntity snapshot = systemSnapshot();
+        stubDetail(snapshot);
+
+        var dish = service.detail(7L, 91L).dishes().getFirst();
+
+        assertThat(dish.scope()).isEqualTo("SYSTEM");
+        assertThat(dish.recipeVersion()).isEqualTo(1L);
+        assertThat(dish.servings()).isNull();
+        assertThat(dish.method()).isNull();
+        assertThat(dish.ingredients()).singleElement()
+                .satisfies(ingredient -> assertThat(ingredient.required()).isTrue());
+    }
+
+    @Test
+    void malformedSnapshotJsonKeepsCodecFailureMessage() {
+        DinnerRecordDishSnapshotEntity snapshot = householdSnapshot();
+        snapshot.setIngredientsJson("{");
         stubDetail(snapshot);
 
         assertThatThrownBy(() -> service.detail(7L, 91L))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Incomplete dinner record method snapshot");
+                .hasMessage("Invalid dinner record snapshot JSON");
+    }
+
+    private static Stream<SnapshotCase> incompleteHouseholdSnapshots() {
+        return Stream.of(
+                new SnapshotCase("missing recipe version",
+                        snapshot -> snapshot.setRecipeVersion(null)),
+                new SnapshotCase("non-positive recipe version",
+                        snapshot -> snapshot.setRecipeVersion(0L)),
+                new SnapshotCase("missing servings",
+                        snapshot -> snapshot.setServings(null)),
+                new SnapshotCase("servings below publication range",
+                        snapshot -> snapshot.setServings(0)),
+                new SnapshotCase("servings above publication range",
+                        snapshot -> snapshot.setServings(21)),
+                new SnapshotCase("missing all method metadata", snapshot -> {
+                    snapshot.setMethodId(null);
+                    snapshot.setMethodName(null);
+                    snapshot.setCookingStyle(null);
+                }),
+                new SnapshotCase("missing method steps",
+                        snapshot -> snapshot.setMethodStepsJson("[]")),
+                new SnapshotCase("more than twelve method steps",
+                        snapshot -> snapshot.setMethodStepsJson(stepsJson(13))),
+                new SnapshotCase("missing ingredients",
+                        snapshot -> snapshot.setIngredientsJson("[]")),
+                new SnapshotCase("ingredients without a required item",
+                        snapshot -> snapshot.setIngredientsJson(
+                                "[{\"ingredientId\":101,\"name\":\"鸡蛋\","
+                                        + "\"quantity\":1,\"unit\":\"枚\","
+                                        + "\"required\":false,\"sortOrder\":0}]")));
+    }
+
+    private static Stream<SnapshotCase> incompleteSystemSnapshots() {
+        return Stream.of(
+                new SnapshotCase("system recipe version is not one",
+                        snapshot -> snapshot.setRecipeVersion(2L)),
+                new SnapshotCase("system method metadata is present",
+                        snapshot -> snapshot.setMethodId(21L)),
+                new SnapshotCase("system method steps are present",
+                        snapshot -> snapshot.setMethodStepsJson(
+                                "[{\"instruction\":\"翻炒\",\"sortOrder\":0}]")),
+                new SnapshotCase("system ingredients are missing",
+                        snapshot -> snapshot.setIngredientsJson("[]")),
+                new SnapshotCase("system ingredients have no required item",
+                        snapshot -> snapshot.setIngredientsJson(
+                                "[{\"ingredientId\":101,\"name\":\"盐\","
+                                        + "\"quantity\":1,\"unit\":\"克\","
+                                        + "\"required\":false,\"sortOrder\":0}]")),
+                new SnapshotCase("scope is absent despite V7 fields",
+                        snapshot -> snapshot.setRecipeScope(null)),
+                new SnapshotCase("scope is unsupported",
+                        snapshot -> snapshot.setRecipeScope("SHARED")));
+    }
+
+    private static Stream<SnapshotCase> scopeLessRowsWithV7Data() {
+        return Stream.of(
+                new SnapshotCase("scope-less row has recipe version",
+                        snapshot -> snapshot.setRecipeVersion(1L)),
+                new SnapshotCase("scope-less row has servings",
+                        snapshot -> snapshot.setServings(2)),
+                new SnapshotCase("scope-less row has method id",
+                        snapshot -> snapshot.setMethodId(21L)),
+                new SnapshotCase("scope-less row has method name",
+                        snapshot -> snapshot.setMethodName("家常做法")),
+                new SnapshotCase("scope-less row has cooking style",
+                        snapshot -> snapshot.setCookingStyle("炒")),
+                new SnapshotCase("scope-less row has method steps JSON",
+                        snapshot -> snapshot.setMethodStepsJson("[]")),
+                new SnapshotCase("scope-less row has ingredients JSON",
+                        snapshot -> snapshot.setIngredientsJson("[]")));
+    }
+
+    private static String stepsJson(int count) {
+        return IntStream.range(0, count)
+                .mapToObj(index -> "{\"instruction\":\"步骤" + index
+                        + "\",\"sortOrder\":" + index + "}")
+                .collect(java.util.stream.Collectors.joining(",", "[", "]"));
     }
 
     private void stubContext(DinnerMenuEntity menu) {
@@ -402,6 +520,35 @@ class DinnerRecordServiceTest {
         return snapshot;
     }
 
+    private DinnerRecordDishSnapshotEntity householdSnapshot() {
+        DinnerRecordDishSnapshotEntity snapshot = snapshot();
+        snapshot.setRecipeScope("HOUSEHOLD");
+        snapshot.setRecipeVersion(8L);
+        snapshot.setServings(2);
+        snapshot.setMethodId(21L);
+        snapshot.setMethodName("家常做法");
+        snapshot.setCookingStyle("炒");
+        snapshot.setMethodStepsJson(
+                "[{\"instruction\":\"盛盘\",\"sortOrder\":1},"
+                        + "{\"instruction\":\"翻炒\",\"sortOrder\":0}]");
+        snapshot.setIngredientsJson(
+                "[{\"ingredientId\":101,\"name\":\"鸡蛋\",\"quantity\":null,"
+                        + "\"unit\":\"枚\",\"required\":true,\"sortOrder\":0}]");
+        return snapshot;
+    }
+
+    private DinnerRecordDishSnapshotEntity systemSnapshot() {
+        DinnerRecordDishSnapshotEntity snapshot = snapshot();
+        snapshot.setRecipeScope("SYSTEM");
+        snapshot.setRecipeVersion(1L);
+        snapshot.setServings(null);
+        snapshot.setMethodStepsJson("[]");
+        snapshot.setIngredientsJson(
+                "[{\"ingredientId\":101,\"name\":\"番茄\",\"quantity\":2,"
+                        + "\"unit\":\"个\",\"required\":true,\"sortOrder\":0}]");
+        return snapshot;
+    }
+
     private void stubDetail(DinnerRecordDishSnapshotEntity snapshot) {
         when(memberMapper.selectOne(any())).thenReturn(member());
         DinnerCookingRecordEntity record = record(91L, 31L);
@@ -416,5 +563,15 @@ class DinnerRecordServiceTest {
                 2, 1, 1, List.of(1L, 2L), List.of(),
                 7L, Instant.parse("2026-07-11T10:00:00Z"),
                 7L, Instant.parse("2026-07-11T11:00:00Z"), recordId);
+    }
+
+    private record SnapshotCase(
+            String name,
+            Consumer<DinnerRecordDishSnapshotEntity> mutation
+    ) {
+        @Override
+        public String toString() {
+            return name;
+        }
     }
 }

@@ -45,6 +45,10 @@ import org.springframework.util.StringUtils;
 @Service
 public class DinnerRecordService {
 
+    private static final String INCOMPLETE_SNAPSHOT =
+            "Incomplete dinner record dish snapshot";
+    private static final int MAX_SNAPSHOT_STEPS = 12;
+
     private final DinnerHouseholdMapper householdMapper;
     private final DinnerHouseholdMemberMapper memberMapper;
     private final DinnerMenuMapper menuMapper;
@@ -269,33 +273,106 @@ public class DinnerRecordService {
             DinnerRecordDishSnapshotEntity snapshot,
             Long currentUserId
     ) {
-        String scope = snapshot.getRecipeScope() == null
-                ? "SYSTEM" : snapshot.getRecipeScope();
-        Long recipeVersion = snapshot.getRecipeVersion() == null
-                ? 1L : snapshot.getRecipeVersion();
         List<RecordMethodStepSnapshotResponse> steps =
                 snapshotJsonCodec.readSteps(snapshot.getMethodStepsJson());
-        boolean methodAbsent = snapshot.getMethodId() == null
-                && snapshot.getMethodName() == null
-                && snapshot.getCookingStyle() == null
-                && steps.isEmpty();
-        if (!methodAbsent && (snapshot.getMethodId() == null
-                || !StringUtils.hasText(snapshot.getMethodName())
-                || !StringUtils.hasText(snapshot.getCookingStyle())
-                || steps.isEmpty())) {
-            throw new IllegalStateException("Incomplete dinner record method snapshot");
-        }
-        RecordMethodSnapshotResponse method = methodAbsent ? null
-                : new RecordMethodSnapshotResponse(
-                        snapshot.getMethodId(), snapshot.getMethodName(),
-                        snapshot.getCookingStyle(), steps);
         List<RecordIngredientSnapshotResponse> ingredients =
                 snapshotJsonCodec.readIngredients(snapshot.getIngredientsJson());
+        String scope;
+        Long recipeVersion;
+        Integer servings;
+        RecordMethodSnapshotResponse method;
+
+        if (isLegacySnapshot(snapshot)) {
+            scope = "SYSTEM";
+            recipeVersion = 1L;
+            servings = null;
+            method = null;
+            ingredients = List.of();
+        } else if ("HOUSEHOLD".equals(snapshot.getRecipeScope())) {
+            validateHouseholdSnapshot(snapshot, steps, ingredients);
+            scope = "HOUSEHOLD";
+            recipeVersion = snapshot.getRecipeVersion();
+            servings = snapshot.getServings();
+            method = new RecordMethodSnapshotResponse(
+                    snapshot.getMethodId(), snapshot.getMethodName(),
+                    snapshot.getCookingStyle(), steps);
+        } else if ("SYSTEM".equals(snapshot.getRecipeScope())) {
+            validateSystemSnapshot(snapshot, steps, ingredients);
+            scope = "SYSTEM";
+            recipeVersion = 1L;
+            servings = snapshot.getServings();
+            method = null;
+        } else {
+            throw incompleteSnapshot();
+        }
         return new RecordDishResponse(
                 snapshot.getRecipeId(), snapshot.getName(), snapshot.getImagePath(),
                 snapshot.getCategory(), snapshot.getFlavor(), snapshot.getEstimatedMinutes(),
                 source(snapshot.getSelectedByUserIds(), currentUserId), scope, recipeVersion,
-                snapshot.getServings(), method, ingredients);
+                servings, method, ingredients);
+    }
+
+    private boolean isLegacySnapshot(DinnerRecordDishSnapshotEntity snapshot) {
+        return snapshot.getRecipeScope() == null
+                && snapshot.getRecipeVersion() == null
+                && snapshot.getServings() == null
+                && snapshot.getMethodId() == null
+                && !StringUtils.hasText(snapshot.getMethodName())
+                && !StringUtils.hasText(snapshot.getCookingStyle())
+                && !StringUtils.hasText(snapshot.getMethodStepsJson())
+                && !StringUtils.hasText(snapshot.getIngredientsJson());
+    }
+
+    private void validateHouseholdSnapshot(
+            DinnerRecordDishSnapshotEntity snapshot,
+            List<RecordMethodStepSnapshotResponse> steps,
+            List<RecordIngredientSnapshotResponse> ingredients
+    ) {
+        if (snapshot.getRecipeVersion() == null
+                || snapshot.getRecipeVersion() <= 0
+                || snapshot.getServings() == null
+                || snapshot.getServings() < 1
+                || snapshot.getServings() > 20
+                || snapshot.getMethodId() == null
+                || !StringUtils.hasText(snapshot.getMethodName())
+                || !StringUtils.hasText(snapshot.getCookingStyle())
+                || !validSteps(steps)
+                || !validIngredients(ingredients)) {
+            throw incompleteSnapshot();
+        }
+    }
+
+    private void validateSystemSnapshot(
+            DinnerRecordDishSnapshotEntity snapshot,
+            List<RecordMethodStepSnapshotResponse> steps,
+            List<RecordIngredientSnapshotResponse> ingredients
+    ) {
+        boolean methodAbsent = snapshot.getMethodId() == null
+                && !StringUtils.hasText(snapshot.getMethodName())
+                && !StringUtils.hasText(snapshot.getCookingStyle())
+                && steps.isEmpty();
+        if (!Objects.equals(snapshot.getRecipeVersion(), 1L)
+                || !methodAbsent
+                || !validIngredients(ingredients)) {
+            throw incompleteSnapshot();
+        }
+    }
+
+    private boolean validSteps(List<RecordMethodStepSnapshotResponse> steps) {
+        return !steps.isEmpty()
+                && steps.size() <= MAX_SNAPSHOT_STEPS
+                && steps.stream().allMatch(step ->
+                        StringUtils.hasText(step.instruction()));
+    }
+
+    private boolean validIngredients(List<RecordIngredientSnapshotResponse> ingredients) {
+        return !ingredients.isEmpty()
+                && ingredients.stream().anyMatch(
+                        RecordIngredientSnapshotResponse::required);
+    }
+
+    private IllegalStateException incompleteSnapshot() {
+        return new IllegalStateException(INCOMPLETE_SNAPSHOT);
     }
 
     private Instant instant(LocalDateTime value) {
