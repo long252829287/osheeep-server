@@ -135,6 +135,22 @@ class DinnerRecipeCatalogAssemblerTest {
     }
 
     @Test
+    void omitsHouseholdAggregateWhenApprovedImageBatchDoesNotCoverRequestedId() {
+        DinnerRecipeEntity household = householdRecipe(14L, 70L, 8L, 91L);
+        when(ingredientMapper.selectWithIngredientNames(List.of(14L))).thenReturn(List.of(
+                ingredient(14L, 101L, "番茄", true, 0)));
+        when(methodMapper.selectList(any())).thenReturn(List.of(
+                method(21L, 14L, "家常做法", "炒")));
+        when(stepMapper.selectList(any())).thenReturn(List.of(
+                step(31L, 21L, "翻炒", 0)));
+        when(imageAssetService.findApprovedByIds(List.of(91L))).thenReturn(Map.of());
+
+        assertThat(assembler.assemble(List.of(household))).isEmpty();
+
+        verify(imageAssetService).findApprovedByIds(List.of(91L));
+    }
+
+    @Test
     void omitsWholeHouseholdAggregateForAnotherHouseholdsIngredientWithoutLoggingItsName() {
         String privateIngredientName = "另一个家庭的私有食材";
         DinnerRecipeEntity system = systemRecipe(1L);
@@ -245,9 +261,6 @@ class DinnerRecipeCatalogAssemblerTest {
                                         31L + index, 21L, "步骤" + index, index))
                                 .toList(),
                         validImage),
-                new DamagedAggregateFixture(
-                        "missing or unapproved image", validIngredients, validMethod,
-                        validSteps, Map.of()),
                 new DamagedAggregateFixture(
                         "approved image without list url", validIngredients, validMethod,
                         validSteps, Map.of(91L, imageWithListUrl(91L, " "))));

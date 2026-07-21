@@ -107,6 +107,49 @@ class DinnerImageAssetServiceTest {
     }
 
     @Test
+    void approvedBatchOmitsAssetsWithBlankListOrDetailObjectKeys() {
+        DinnerImageAssetEntity blankList = asset(8L, "APPROVED");
+        blankList.setListObjectKey("");
+        DinnerImageAssetEntity blankDetail = asset(10L, "APPROVED");
+        blankDetail.setDetailObjectKey("  ");
+        when(mapper.selectList(any())).thenReturn(List.of(
+                blankList, asset(9L, "APPROVED"), blankDetail));
+
+        Map<Long, ImageAssetResponse> result =
+                service.findApprovedByIds(List.of(8L, 9L, 10L));
+
+        assertThat(result).containsOnlyKeys(9L);
+        assertThat(result.values()).allSatisfy(image -> {
+            assertThat(image.listUrl()).isNotBlank();
+            assertThat(image.detailUrl()).isNotBlank();
+        });
+    }
+
+    @Test
+    void requireApprovedRejectsApprovedAssetWithIncompleteDerivedObjectKeys() {
+        DinnerImageAssetEntity blankList = asset(8L, "APPROVED");
+        blankList.setListObjectKey(" ");
+        when(mapper.selectById(8L)).thenReturn(blankList);
+
+        assertThatThrownBy(() -> service.requireApproved(8L))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_IMAGE_INVALID));
+    }
+
+    @Test
+    void searchDoesNotExposeApprovedAssetWithNullDerivedObjectKey() {
+        DinnerImageAssetEntity missingList = asset(8L, "APPROVED");
+        missingList.setListObjectKey(null);
+        when(mapper.selectList(any())).thenReturn(List.of(
+                missingList, asset(9L, "APPROVED")));
+
+        assertThat(service.search("番茄"))
+                .extracting(ImageAssetResponse::id)
+                .containsExactly(9L);
+    }
+
+    @Test
     void disabledOrMissingAssetIsUnavailableForDraftSelection() {
         when(mapper.selectById(8L)).thenReturn(asset(8L, "DISABLED"));
         when(mapper.selectById(404L)).thenReturn(null);

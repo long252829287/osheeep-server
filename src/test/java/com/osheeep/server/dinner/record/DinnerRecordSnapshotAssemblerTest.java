@@ -169,7 +169,7 @@ class DinnerRecordSnapshotAssemblerTest {
     }
 
     @Test
-    void missingApprovedImageIsInvalid() {
+    void approvedImageBatchMissingRequestedIdIsInvalid() {
         DinnerRecipeEntity family = householdRecipe(14L, 70L, 8L, 2, 91L);
         stubHouseholdAggregate(family, validIngredients(14L),
                 List.of(method(21L, 14L, "家常做法", "炒")),
@@ -177,6 +177,8 @@ class DinnerRecordSnapshotAssemblerTest {
 
         assertInvalid(() -> assembler.assemble(70L, List.of(
                 householdSelection(14L, 7L, 8L, 21L))));
+
+        verify(imageAssetService).findApprovedByIds(List.of(91L));
     }
 
     @Test

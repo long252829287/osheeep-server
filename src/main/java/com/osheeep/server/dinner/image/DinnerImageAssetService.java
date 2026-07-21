@@ -9,6 +9,7 @@ import com.osheeep.server.dinner.image.mapper.DinnerImageAssetMapper;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
@@ -41,15 +42,16 @@ public class DinnerImageAssetService {
                     .like(DinnerImageAssetEntity::getSearchKeywords, normalized));
         }
         wrapper.orderByAsc(DinnerImageAssetEntity::getId);
-        return mapper.selectList(wrapper).stream().map(this::toResponse).toList();
+        return mapper.selectList(wrapper).stream()
+                .map(this::toApprovedResponse)
+                .flatMap(Optional::stream)
+                .toList();
     }
 
     public ImageAssetResponse requireApproved(Long imageAssetId) {
-        DinnerImageAssetEntity asset = mapper.selectById(imageAssetId);
-        if (asset == null || !APPROVED.equals(asset.getStatus())) {
-            throw new BusinessException(ErrorCode.DINNER_RECIPE_IMAGE_INVALID);
-        }
-        return toResponse(asset);
+        return toApprovedResponse(mapper.selectById(imageAssetId))
+                .orElseThrow(() ->
+                        new BusinessException(ErrorCode.DINNER_RECIPE_IMAGE_INVALID));
     }
 
     public Map<Long, ImageAssetResponse> findApprovedByIds(List<Long> imageAssetIds) {
@@ -61,7 +63,8 @@ public class DinnerImageAssetService {
                         .in(DinnerImageAssetEntity::getId, distinctIds)
                         .eq(DinnerImageAssetEntity::getStatus, APPROVED))
                 .stream()
-                .map(this::toResponse)
+                .map(this::toApprovedResponse)
+                .flatMap(Optional::stream)
                 .collect(Collectors.toMap(
                         ImageAssetResponse::id,
                         Function.identity(),
@@ -69,16 +72,37 @@ public class DinnerImageAssetService {
                         LinkedHashMap::new));
     }
 
-    private ImageAssetResponse toResponse(DinnerImageAssetEntity asset) {
-        return new ImageAssetResponse(
+    private Optional<ImageAssetResponse> toApprovedResponse(
+            DinnerImageAssetEntity asset
+    ) {
+        if (asset == null
+                || !APPROVED.equals(asset.getStatus())
+                || !validObjectKey(asset.getListObjectKey())
+                || !validObjectKey(asset.getDetailObjectKey())) {
+            return Optional.empty();
+        }
+        return Optional.of(new ImageAssetResponse(
                 asset.getId(), asset.getDisplayName(), objectUrl(asset.getListObjectKey()),
                 objectUrl(asset.getDetailObjectKey()), asset.getSourcePageUrl(), asset.getAuthor(),
                 asset.getLicenseName(), asset.getLicenseUrl(), asset.getAcquiredOn(),
-                asset.getOriginalWidth(), asset.getOriginalHeight());
+                asset.getOriginalWidth(), asset.getOriginalHeight()));
     }
 
     private String objectUrl(String objectKey) {
-        return publicBaseUrl + "/" + objectKey.replaceFirst("^/+", "");
+        String normalized = normalizeObjectKey(objectKey);
+        return normalized == null ? null : publicBaseUrl + "/" + normalized;
+    }
+
+    private boolean validObjectKey(String objectKey) {
+        return normalizeObjectKey(objectKey) != null;
+    }
+
+    private String normalizeObjectKey(String objectKey) {
+        if (!StringUtils.hasText(objectKey)) {
+            return null;
+        }
+        String normalized = objectKey.strip().replaceFirst("^/+", "");
+        return StringUtils.hasText(normalized) ? normalized : null;
     }
 
     private String trimTrailingSlashes(String value) {
