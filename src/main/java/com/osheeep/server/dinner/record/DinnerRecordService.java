@@ -15,8 +15,6 @@ import com.osheeep.server.dinner.menu.entity.DinnerMenuSelectionEntity;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuActionMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuSelectionMapper;
-import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
-import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
 import com.osheeep.server.dinner.record.dto.CompleteMenuResponse;
 import com.osheeep.server.dinner.record.dto.RecordDetailResponse;
 import com.osheeep.server.dinner.record.dto.RecordDishResponse;
@@ -33,11 +31,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.HashMap;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -55,10 +50,10 @@ public class DinnerRecordService {
     private final DinnerMenuMapper menuMapper;
     private final DinnerMenuSelectionMapper selectionMapper;
     private final DinnerMenuActionMapper actionMapper;
-    private final DinnerRecipeMapper recipeMapper;
     private final DinnerCookingRecordMapper recordMapper;
     private final DinnerRecordDishSnapshotMapper snapshotMapper;
     private final DinnerMenuService menuService;
+    private final DinnerRecordSnapshotAssembler snapshotAssembler;
     private final DinnerRecordSnapshotJsonCodec snapshotJsonCodec;
     private final BusinessDateResolver businessDateResolver;
     private final Clock clock;
@@ -70,15 +65,15 @@ public class DinnerRecordService {
             DinnerMenuMapper menuMapper,
             DinnerMenuSelectionMapper selectionMapper,
             DinnerMenuActionMapper actionMapper,
-            DinnerRecipeMapper recipeMapper,
             DinnerCookingRecordMapper recordMapper,
             DinnerRecordDishSnapshotMapper snapshotMapper,
             DinnerMenuService menuService,
+            DinnerRecordSnapshotAssembler snapshotAssembler,
             DinnerRecordSnapshotJsonCodec snapshotJsonCodec,
             BusinessDateResolver businessDateResolver
     ) {
         this(householdMapper, memberMapper, menuMapper, selectionMapper, actionMapper,
-                recipeMapper, recordMapper, snapshotMapper, menuService,
+                recordMapper, snapshotMapper, menuService, snapshotAssembler,
                 snapshotJsonCodec, businessDateResolver, Clock.systemUTC());
     }
 
@@ -88,10 +83,10 @@ public class DinnerRecordService {
             DinnerMenuMapper menuMapper,
             DinnerMenuSelectionMapper selectionMapper,
             DinnerMenuActionMapper actionMapper,
-            DinnerRecipeMapper recipeMapper,
             DinnerCookingRecordMapper recordMapper,
             DinnerRecordDishSnapshotMapper snapshotMapper,
             DinnerMenuService menuService,
+            DinnerRecordSnapshotAssembler snapshotAssembler,
             DinnerRecordSnapshotJsonCodec snapshotJsonCodec,
             BusinessDateResolver businessDateResolver,
             Clock clock
@@ -101,10 +96,10 @@ public class DinnerRecordService {
         this.menuMapper = menuMapper;
         this.selectionMapper = selectionMapper;
         this.actionMapper = actionMapper;
-        this.recipeMapper = recipeMapper;
         this.recordMapper = recordMapper;
         this.snapshotMapper = snapshotMapper;
         this.menuService = menuService;
+        this.snapshotAssembler = snapshotAssembler;
         this.snapshotJsonCodec = snapshotJsonCodec;
         this.businessDateResolver = businessDateResolver;
         this.clock = clock;
@@ -143,14 +138,8 @@ public class DinnerRecordService {
         List<DinnerMenuSelectionEntity> selections = selectionMapper.selectList(
                 Wrappers.<DinnerMenuSelectionEntity>lambdaQuery()
                         .eq(DinnerMenuSelectionEntity::getMenuId, menu.getId()));
-        Map<Long, Set<Long>> selectedByRecipe = new HashMap<>();
-        for (DinnerMenuSelectionEntity selection : selections) {
-            selectedByRecipe.computeIfAbsent(selection.getRecipeId(), ignored -> new LinkedHashSet<>())
-                    .add(selection.getUserId());
-        }
-        List<Long> recipeIds = selectedByRecipe.keySet().stream().sorted().toList();
-        Map<Long, DinnerRecipeEntity> recipesById = recipeMapper.selectByIds(recipeIds).stream()
-                .collect(Collectors.toMap(DinnerRecipeEntity::getId, recipe -> recipe));
+        List<DinnerRecordSnapshotAssembler.SnapshotDraft> snapshotDrafts =
+                snapshotAssembler.assemble(household.getId(), selections);
 
         LocalDateTime now = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
         DinnerCookingRecordEntity record = new DinnerCookingRecordEntity();
@@ -163,21 +152,31 @@ public class DinnerRecordService {
             recordMapper.insert(record);
         } catch (DuplicateKeyException exception) {
             DinnerCookingRecordEntity winner = findRecord(menu.getId());
+            if (winner == null) {
+                throw exception;
+            }
             return new CompleteMenuResponse(winner.getId(), menuService.today(userId));
         }
 
         int sortOrder = 0;
-        for (Long recipeId : recipeIds) {
-            DinnerRecipeEntity recipe = recipesById.get(recipeId);
+        for (DinnerRecordSnapshotAssembler.SnapshotDraft draft : snapshotDrafts) {
             DinnerRecordDishSnapshotEntity snapshot = new DinnerRecordDishSnapshotEntity();
             snapshot.setRecordId(record.getId());
-            snapshot.setRecipeId(recipe.getId());
-            snapshot.setName(recipe.getName());
-            snapshot.setImagePath(recipe.getImagePath());
-            snapshot.setCategory(recipe.getCategory());
-            snapshot.setFlavor(recipe.getFlavor());
-            snapshot.setEstimatedMinutes(recipe.getEstimatedMinutes());
-            snapshot.setSelectedByUserIds(toJsonArray(selectedByRecipe.get(recipeId)));
+            snapshot.setRecipeId(draft.recipeId());
+            snapshot.setRecipeScope(draft.scope());
+            snapshot.setRecipeVersion(draft.recipeVersion());
+            snapshot.setName(draft.name());
+            snapshot.setImagePath(draft.imagePath());
+            snapshot.setCategory(draft.category());
+            snapshot.setFlavor(draft.flavor());
+            snapshot.setEstimatedMinutes(draft.estimatedMinutes());
+            snapshot.setServings(draft.servings());
+            snapshot.setMethodId(draft.methodId());
+            snapshot.setMethodName(draft.methodName());
+            snapshot.setCookingStyle(draft.cookingStyle());
+            snapshot.setMethodStepsJson(snapshotJsonCodec.writeSteps(draft.steps()));
+            snapshot.setIngredientsJson(snapshotJsonCodec.writeIngredients(draft.ingredients()));
+            snapshot.setSelectedByUserIds(toJsonArray(draft.selectedByUserIds()));
             snapshot.setSortOrder(sortOrder++);
             snapshotMapper.insert(snapshot);
         }

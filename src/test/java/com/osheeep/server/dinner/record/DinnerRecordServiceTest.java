@@ -4,11 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.osheeep.server.common.error.BusinessException;
+import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
@@ -22,22 +25,27 @@ import com.osheeep.server.dinner.menu.entity.DinnerMenuSelectionEntity;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuActionMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuMapper;
 import com.osheeep.server.dinner.menu.mapper.DinnerMenuSelectionMapper;
-import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
+import com.osheeep.server.dinner.record.dto.RecordIngredientSnapshotResponse;
+import com.osheeep.server.dinner.record.dto.RecordMethodStepSnapshotResponse;
 import com.osheeep.server.dinner.record.entity.DinnerCookingRecordEntity;
 import com.osheeep.server.dinner.record.entity.DinnerRecordDishSnapshotEntity;
 import com.osheeep.server.dinner.record.mapper.DinnerCookingRecordMapper;
 import com.osheeep.server.dinner.record.mapper.DinnerRecordDishSnapshotMapper;
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
 
 @ExtendWith(MockitoExtension.class)
 class DinnerRecordServiceTest {
@@ -51,6 +59,7 @@ class DinnerRecordServiceTest {
     @Mock private DinnerCookingRecordMapper recordMapper;
     @Mock private DinnerRecordDishSnapshotMapper snapshotMapper;
     @Mock private DinnerMenuService menuService;
+    @Mock private DinnerRecordSnapshotAssembler snapshotAssembler;
 
     private DinnerRecordService service;
 
@@ -59,7 +68,7 @@ class DinnerRecordServiceTest {
         Clock clock = Clock.fixed(Instant.parse("2026-07-11T11:00:00Z"), ZoneOffset.UTC);
         service = new DinnerRecordService(
                 householdMapper, memberMapper, menuMapper, selectionMapper, actionMapper,
-                recipeMapper, recordMapper, snapshotMapper, menuService,
+                recordMapper, snapshotMapper, menuService, snapshotAssembler,
                 new DinnerRecordSnapshotJsonCodec(new ObjectMapper()),
                 new BusinessDateResolver(), clock);
     }
@@ -75,6 +84,7 @@ class DinnerRecordServiceTest {
         assertThat(result.recordId()).isEqualTo(91L);
         verify(recordMapper, never()).insert(any(DinnerCookingRecordEntity.class));
         verify(snapshotMapper, never()).insert(any(DinnerRecordDishSnapshotEntity.class));
+        verifyNoInteractions(snapshotAssembler);
     }
 
     @Test
@@ -82,10 +92,12 @@ class DinnerRecordServiceTest {
         DinnerMenuEntity menu = menu("CONFIRMED", 5L);
         stubContext(menu);
         when(recordMapper.selectOne(any())).thenReturn(null);
-        when(selectionMapper.selectList(any())).thenReturn(List.of(
-                selection(7L, 1L), selection(8L, 1L), selection(7L, 2L)));
-        when(recipeMapper.selectByIds(any())).thenReturn(List.of(
-                recipe(1L, "番茄炒蛋"), recipe(2L, "小炒黄牛肉")));
+        List<DinnerMenuSelectionEntity> selections = List.of(
+                selection(7L, 1L), selection(8L, 1L), selection(7L, 14L));
+        when(selectionMapper.selectList(any())).thenReturn(selections);
+        when(snapshotAssembler.assemble(11L, selections)).thenReturn(List.of(
+                systemDraft(1L, Set.of(7L, 8L)),
+                householdDraft(14L, Set.of(7L))));
         when(recordMapper.insert(any(DinnerCookingRecordEntity.class))).thenAnswer(invocation -> {
             invocation.<DinnerCookingRecordEntity>getArgument(0).setId(91L);
             return 1;
@@ -98,9 +110,100 @@ class DinnerRecordServiceTest {
         assertThat(menu.getStatus()).isEqualTo("COMPLETED");
         assertThat(menu.getVersion()).isEqualTo(6L);
         verify(recordMapper).insert(any(DinnerCookingRecordEntity.class));
-        verify(snapshotMapper, org.mockito.Mockito.times(2))
-                .insert(any(DinnerRecordDishSnapshotEntity.class));
+        ArgumentCaptor<DinnerRecordDishSnapshotEntity> inserted =
+                ArgumentCaptor.forClass(DinnerRecordDishSnapshotEntity.class);
+        verify(snapshotMapper, times(2)).insert(inserted.capture());
+        assertThat(inserted.getAllValues()).satisfiesExactly(
+                system -> {
+                    assertThat(system.getRecipeScope()).isEqualTo("SYSTEM");
+                    assertThat(system.getRecipeVersion()).isEqualTo(1L);
+                    assertThat(system.getServings()).isNull();
+                    assertThat(system.getMethodId()).isNull();
+                    assertThat(system.getIngredientsJson()).contains("系统食材");
+                    assertThat(system.getSortOrder()).isZero();
+                },
+                family -> {
+                    assertThat(family.getRecipeScope()).isEqualTo("HOUSEHOLD");
+                    assertThat(family.getRecipeVersion()).isEqualTo(8L);
+                    assertThat(family.getServings()).isEqualTo(2);
+                    assertThat(family.getMethodId()).isEqualTo(21L);
+                    assertThat(family.getMethodStepsJson()).contains("翻炒", "盛盘");
+                    assertThat(family.getIngredientsJson()).contains("鸡蛋");
+                    assertThat(family.getSortOrder()).isEqualTo(1);
+                });
         verify(actionMapper).insert(any(DinnerMenuActionEntity.class));
+    }
+
+    @Test
+    void aggregateValidationFailureHappensBeforeAnyCompletionWrite() {
+        DinnerMenuEntity menu = menu("CONFIRMED", 5L);
+        stubContext(menu);
+        when(recordMapper.selectOne(any())).thenReturn(null);
+        List<DinnerMenuSelectionEntity> selections = List.of(selection(7L, 14L));
+        when(selectionMapper.selectList(any())).thenReturn(selections);
+        when(snapshotAssembler.assemble(11L, selections))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_RECIPE_INVALID));
+
+        assertThatThrownBy(() -> service.complete(
+                7L, 5L, "00000000-0000-4000-8000-000000000013"))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_INVALID));
+
+        verify(recordMapper, never()).insert(any(DinnerCookingRecordEntity.class));
+        verify(snapshotMapper, never()).insert(any(DinnerRecordDishSnapshotEntity.class));
+        verify(menuMapper, never()).updateById(any(DinnerMenuEntity.class));
+        verify(actionMapper, never()).insert(any(DinnerMenuActionEntity.class));
+    }
+
+    @Test
+    void snapshotInsertFailureEscapesBeforeMenuAndActionWrites() {
+        DinnerMenuEntity menu = menu("CONFIRMED", 5L);
+        stubContext(menu);
+        when(recordMapper.selectOne(any())).thenReturn(null);
+        List<DinnerMenuSelectionEntity> selections = List.of(
+                selection(7L, 1L), selection(7L, 14L));
+        when(selectionMapper.selectList(any())).thenReturn(selections);
+        when(snapshotAssembler.assemble(11L, selections)).thenReturn(List.of(
+                systemDraft(1L, Set.of(7L)), householdDraft(14L, Set.of(7L))));
+        when(recordMapper.insert(any(DinnerCookingRecordEntity.class))).thenAnswer(invocation -> {
+            invocation.<DinnerCookingRecordEntity>getArgument(0).setId(91L);
+            return 1;
+        });
+        when(snapshotMapper.insert(any(DinnerRecordDishSnapshotEntity.class)))
+                .thenReturn(1)
+                .thenThrow(new IllegalStateException("snapshot write failed"));
+
+        assertThatThrownBy(() -> service.complete(
+                7L, 5L, "00000000-0000-4000-8000-000000000014"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("snapshot write failed");
+
+        verify(snapshotMapper, times(2)).insert(any(DinnerRecordDishSnapshotEntity.class));
+        verify(menuMapper, never()).updateById(any(DinnerMenuEntity.class));
+        verify(actionMapper, never()).insert(any(DinnerMenuActionEntity.class));
+    }
+
+    @Test
+    void duplicateRecordWithoutWinnerRethrowsDuplicateFailure() {
+        DinnerMenuEntity menu = menu("CONFIRMED", 5L);
+        stubContext(menu);
+        when(recordMapper.selectOne(any()))
+                .thenReturn(null)
+                .thenReturn(null);
+        List<DinnerMenuSelectionEntity> selections = List.of(selection(7L, 1L));
+        when(selectionMapper.selectList(any())).thenReturn(selections);
+        when(snapshotAssembler.assemble(11L, selections)).thenReturn(List.of(
+                systemDraft(1L, Set.of(7L))));
+        when(recordMapper.insert(any(DinnerCookingRecordEntity.class)))
+                .thenThrow(new DuplicateKeyException("duplicate"));
+
+        assertThatThrownBy(() -> service.complete(
+                7L, 5L, "00000000-0000-4000-8000-000000000015"))
+                .isInstanceOf(DuplicateKeyException.class);
+
+        verify(snapshotMapper, never()).insert(any(DinnerRecordDishSnapshotEntity.class));
+        verify(menuMapper, never()).updateById(any(DinnerMenuEntity.class));
     }
 
     @Test
@@ -259,15 +362,32 @@ class DinnerRecordServiceTest {
         return selection;
     }
 
-    private DinnerRecipeEntity recipe(Long id, String name) {
-        DinnerRecipeEntity recipe = new DinnerRecipeEntity();
-        recipe.setId(id);
-        recipe.setName(name);
-        recipe.setImagePath("/assets/recipes/" + id + ".jpg");
-        recipe.setCategory("家常菜");
-        recipe.setFlavor("鲜香");
-        recipe.setEstimatedMinutes(10);
-        return recipe;
+    private DinnerRecordSnapshotAssembler.SnapshotDraft systemDraft(
+            Long recipeId,
+            Set<Long> selectors
+    ) {
+        return new DinnerRecordSnapshotAssembler.SnapshotDraft(
+                recipeId, "SYSTEM", 1L, "系统菜", "/assets/recipes/" + recipeId + ".jpg",
+                "家常菜", "鲜香", null, 10, selectors,
+                null, null, null, List.of(),
+                List.of(new RecordIngredientSnapshotResponse(
+                        101L, "系统食材", BigDecimal.ONE, "个", true, 0)));
+    }
+
+    private DinnerRecordSnapshotAssembler.SnapshotDraft householdDraft(
+            Long recipeId,
+            Set<Long> selectors
+    ) {
+        return new DinnerRecordSnapshotAssembler.SnapshotDraft(
+                recipeId, "HOUSEHOLD", 8L, "自家番茄炒蛋",
+                "https://www.osheeep.com/media/recipes/family-list.webp",
+                "家常菜", "鲜香", 2, 10, selectors,
+                21L, "家常做法", "炒",
+                List.of(
+                        new RecordMethodStepSnapshotResponse("盛盘", 1),
+                        new RecordMethodStepSnapshotResponse("翻炒", 0)),
+                List.of(new RecordIngredientSnapshotResponse(
+                        201L, "鸡蛋", BigDecimal.ONE, "枚", true, 0)));
     }
 
     private DinnerRecordDishSnapshotEntity snapshot() {
