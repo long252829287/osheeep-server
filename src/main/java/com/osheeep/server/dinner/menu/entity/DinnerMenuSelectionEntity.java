@@ -13,6 +13,8 @@ public class DinnerMenuSelectionEntity {
     @TableField("menu_id") private Long menuId;
     @TableField("user_id") private Long userId;
     @TableField("recipe_id") private Long recipeId;
+    @TableField("recipe_version") private Long recipeVersion;
+    @TableField("method_id") private Long methodId;
     @TableField("selected_at") private LocalDateTime selectedAt;
 
     public Long getId() { return id; }
@@ -23,6 +25,10 @@ public class DinnerMenuSelectionEntity {
     public void setUserId(Long userId) { this.userId = userId; }
     public Long getRecipeId() { return recipeId; }
     public void setRecipeId(Long recipeId) { this.recipeId = recipeId; }
+    public Long getRecipeVersion() { return recipeVersion; }
+    public void setRecipeVersion(Long recipeVersion) { this.recipeVersion = recipeVersion; }
+    public Long getMethodId() { return methodId; }
+    public void setMethodId(Long methodId) { this.methodId = methodId; }
     public LocalDateTime getSelectedAt() { return selectedAt; }
     public void setSelectedAt(LocalDateTime selectedAt) { this.selectedAt = selectedAt; }
 }
