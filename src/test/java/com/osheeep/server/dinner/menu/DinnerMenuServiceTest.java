@@ -219,6 +219,25 @@ class DinnerMenuServiceTest {
     }
 
     @Test
+    void todayRejectsInactiveSavedMethod() {
+        DinnerRecipeEntity family = publishedHouseholdRecipe(14L, 11L, 8L, 91L);
+        DinnerRecipeMethodEntity inactiveMethod =
+                method(21L, 14L, "旧做法", "炒");
+        inactiveMethod.setStatus("INACTIVE");
+        stubTodayContext(menu(31L));
+        when(selectionMapper.selectList(any())).thenReturn(List.of(
+                householdSelection(31L, 7L, 14L, 8L, 21L)));
+        when(recipeMapper.selectByIds(List.of(14L))).thenReturn(List.of(family));
+        when(methodMapper.selectByIds(List.of(21L))).thenReturn(List.of(inactiveMethod));
+        when(imageAssetService.findApprovedByIds(List.of(91L)))
+                .thenReturn(Map.of(91L, approvedImage(91L)));
+
+        assertDinnerRecipeInvalid(() -> service.today(7L));
+
+        verify(methodMapper).selectByIds(List.of(21L));
+    }
+
+    @Test
     void todayRejectsTamperedSelectionFromAnotherHousehold() {
         DinnerRecipeEntity foreign = publishedHouseholdRecipe(14L, 99L, 8L, 91L);
         stubTodayContext(menu(31L));

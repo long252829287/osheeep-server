@@ -305,6 +305,7 @@ public class DinnerMenuService {
                 DinnerRecipeMethodEntity savedMethod = methodsById.get(identity.methodId());
                 if (savedMethod == null
                         || !Objects.equals(savedMethod.getRecipeId(), recipeId)
+                        || !"ACTIVE".equals(savedMethod.getStatus())
                         || !StringUtils.hasText(savedMethod.getName())
                         || !StringUtils.hasText(savedMethod.getCookingStyle())) {
                     throw invalidRecipe();
