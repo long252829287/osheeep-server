@@ -3,6 +3,7 @@ package com.osheeep.server.dinner.recipe;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.image.DinnerImageAssetService;
+import com.osheeep.server.dinner.recipe.DinnerRecipeAuthorizer.RecipeAccess;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
@@ -39,11 +40,11 @@ public class DinnerRecipePublishTransaction {
     @Transactional
     public RecipeDraftResponse publishChecked(Long userId, Long recipeId, long expectedVersion) {
         try {
+            RecipeAccess membership = authorizer.requireMembershipForUpdate(userId);
             DinnerRecipeEntity draft = recipeMapper.selectByIdForUpdate(recipeId);
             if (draft == null) {
                 throw new BusinessException(ErrorCode.DINNER_RECIPE_NOT_FOUND);
             }
-            var membership = authorizer.requireMembershipForUpdate(userId);
             if (!Objects.equals(membership.householdId(), draft.getHouseholdId())) {
                 throw new BusinessException(ErrorCode.FORBIDDEN);
             }
@@ -53,7 +54,7 @@ public class DinnerRecipePublishTransaction {
             if (!Objects.equals(draft.getVersion(), expectedVersion)) {
                 throw new BusinessException(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT);
             }
-            RecipeDraftResponse detail = queryService.detail(userId, recipeId);
+            RecipeDraftResponse detail = queryService.detail(membership, recipeId);
             RecipePublishSnapshot snapshot = new RecipePublishSnapshot(
                     draft.getId(), draft.getCreatorId(), draft.getHouseholdId(), draft.getVersion(),
                     detail.name(), detail.category(), detail.flavor(), detail.servings(),
@@ -69,7 +70,7 @@ public class DinnerRecipePublishTransaction {
             draft.setLastModifiedBy(userId);
             draft.setVersion(draft.getVersion() + 1L);
             recipeMapper.updateById(draft);
-            return queryService.detail(userId, recipeId);
+            return queryService.detail(membership, recipeId);
         } catch (DuplicateKeyException | PessimisticLockingFailureException exception) {
             throw new BusinessException(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT);
         }

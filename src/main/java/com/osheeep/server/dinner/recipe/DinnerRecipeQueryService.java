@@ -93,7 +93,11 @@ public class DinnerRecipeQueryService {
     }
 
     public RecipeDraftResponse detail(Long userId, Long recipeId) {
-        DinnerRecipeEntity recipe = authorizer.requireVisible(userId, recipeId);
+        return detail(authorizer.requireMembership(userId), recipeId);
+    }
+
+    RecipeDraftResponse detail(RecipeAccess access, Long recipeId) {
+        DinnerRecipeEntity recipe = authorizer.requireVisible(access, recipeId);
         AggregateData aggregate = loadAggregate(List.of(recipe));
         return detailResponse(recipe, aggregate);
     }

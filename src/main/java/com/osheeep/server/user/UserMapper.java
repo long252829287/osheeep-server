@@ -12,7 +12,7 @@ import org.apache.ibatis.annotations.Update;
 public interface UserMapper extends BaseMapper<UserEntity> {
 
     @Select("SELECT * FROM users WHERE id = #{id} FOR UPDATE")
-    UserEntity selectByIdForUpdate(Long id);
+    UserEntity selectByIdForUpdate(@Param("id") Long id);
 
     @Update("""
             UPDATE users

@@ -13,6 +13,8 @@ public enum ErrorCode {
     DINNER_HOUSEHOLD_FULL(HttpStatus.CONFLICT, "Household already has two members"),
     DINNER_ALREADY_IN_HOUSEHOLD(HttpStatus.CONFLICT, "User already belongs to a household"),
     DINNER_HOUSEHOLD_REQUIRED(HttpStatus.CONFLICT, "An active household is required"),
+    DINNER_HOUSEHOLD_VERSION_CONFLICT(
+            HttpStatus.CONFLICT, "Household state changed while the request was running"),
     DINNER_MENU_EMPTY(HttpStatus.BAD_REQUEST, "Dinner menu must contain at least one recipe"),
     DINNER_MENU_VERSION_CONFLICT(HttpStatus.CONFLICT, "Dinner menu was updated by another member"),
     DINNER_MENU_NOT_CONFIRMED(HttpStatus.CONFLICT, "Dinner menu must be confirmed before completion"),

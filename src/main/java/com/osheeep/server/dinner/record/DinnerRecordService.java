@@ -5,6 +5,7 @@ import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.LockedHouseholdContext;
 import com.osheeep.server.dinner.menu.BusinessDateResolver;
 import com.osheeep.server.dinner.menu.DinnerMenuService;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuActionEntity;
@@ -36,6 +37,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -105,10 +107,11 @@ public class DinnerRecordService {
 
     @Transactional
     public CompleteMenuResponse complete(Long userId, long expectedVersion, String idempotencyKey) {
-        ActiveHouseholdAccess access = householdAccessService.requireActiveHousehold(userId);
+        LockedHouseholdContext lockedContext =
+                householdAccessService.lockActiveHouseholdContext(userId);
+        ActiveHouseholdAccess access = lockedContext.access();
         LocalDate menuDate = businessDateResolver.resolve(access.timezone(), clock.instant());
-        DinnerMenuEntity menu = menuMapper.selectByHouseholdAndDateForUpdate(
-                access.householdId(), menuDate);
+        DinnerMenuEntity menu = lockMenuForUpdate(access.householdId(), menuDate);
         if (menu == null) {
             throw new BusinessException(ErrorCode.DINNER_MENU_NOT_CONFIRMED);
         }
@@ -119,7 +122,9 @@ public class DinnerRecordService {
         DinnerCookingRecordEntity existing = findRecord(menu.getId());
         if (existing != null) {
             requireVisibleRecord(access, existing);
-            return new CompleteMenuResponse(existing.getId(), menuService.today(userId));
+            return new CompleteMenuResponse(
+                    existing.getId(),
+                    menuService.responseForLockedContext(userId, lockedContext, menu));
         }
         if (!Objects.equals(menu.getVersion(), expectedVersion)) {
             throw new BusinessException(ErrorCode.DINNER_MENU_VERSION_CONFLICT);
@@ -153,7 +158,9 @@ public class DinnerRecordService {
                 throw exception;
             }
             requireVisibleRecord(access, winner);
-            return new CompleteMenuResponse(winner.getId(), menuService.today(userId));
+            return new CompleteMenuResponse(
+                    winner.getId(),
+                    menuService.responseForLockedContext(userId, lockedContext, menu));
         }
 
         int sortOrder = 0;
@@ -192,7 +199,9 @@ public class DinnerRecordService {
         action.setActionType("COMPLETE");
         action.setIdempotencyKey(idempotencyKey);
         actionMapper.insert(action);
-        return new CompleteMenuResponse(record.getId(), menuService.today(userId));
+        return new CompleteMenuResponse(
+                record.getId(),
+                menuService.responseForLockedContext(userId, lockedContext, menu));
     }
 
     public List<RecordSummaryResponse> list(Long userId) {
@@ -233,6 +242,14 @@ public class DinnerRecordService {
         return recordMapper.selectOne(Wrappers.<DinnerCookingRecordEntity>lambdaQuery()
                 .eq(DinnerCookingRecordEntity::getMenuId, menuId)
                 .last("LIMIT 1"));
+    }
+
+    private DinnerMenuEntity lockMenuForUpdate(Long householdId, LocalDate menuDate) {
+        try {
+            return menuMapper.selectByHouseholdAndDateForUpdate(householdId, menuDate);
+        } catch (PessimisticLockingFailureException exception) {
+            throw new BusinessException(ErrorCode.DINNER_MENU_VERSION_CONFLICT);
+        }
     }
 
     private void requireVisibleRecord(

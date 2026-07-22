@@ -3,8 +3,10 @@ package com.osheeep.server.dinner.recipe;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -24,26 +26,37 @@ import java.util.List;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
 class DinnerRecipePublishTransactionTest {
 
+    private static final RecipeAccess LOCKED_ACCESS = new RecipeAccess(7L, 70L);
+
     @Mock private DinnerRecipeMapper recipeMapper;
     @Mock private DinnerRecipeAuthorizer authorizer;
     @Mock private DinnerRecipeQueryService queryService;
     @Mock private DinnerImageAssetService imageAssetService;
 
+    @BeforeEach
+    void stubLockedHousehold() {
+        lenient().when(authorizer.requireMembershipForUpdate(7L))
+                .thenReturn(LOCKED_ACCESS);
+    }
+
     @Test
     void checkedVersionIsLockedRevalidatedAndPublished() {
         DinnerRecipePublishTransaction transaction = transaction();
         DinnerRecipeEntity locked = completeDraft(4L);
-        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(LOCKED_ACCESS);
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(locked);
-        when(queryService.detail(7L, 101L)).thenReturn(completeResponse(), publishedResponse());
+        when(queryService.detail(LOCKED_ACCESS, 101L))
+                .thenReturn(completeResponse(), publishedResponse());
 
         assertThat(transaction.publishChecked(7L, 101L, 4L).status()).isEqualTo("PUBLISHED");
 
@@ -53,12 +66,31 @@ class DinnerRecipePublishTransactionTest {
         assertThat(row.getValue().getVersion()).isEqualTo(5L);
         assertThat(row.getValue().getPublishedAt()).isNotNull();
         verify(imageAssetService).requireApproved(9L);
+        InOrder lockOrder = inOrder(authorizer, recipeMapper);
+        lockOrder.verify(authorizer).requireMembershipForUpdate(7L);
+        lockOrder.verify(recipeMapper).selectByIdForUpdate(101L);
+        verify(queryService, times(2)).detail(LOCKED_ACCESS, 101L);
+        verify(queryService, never()).detail(7L, 101L);
+        verify(authorizer, never()).requireMembership(7L);
+    }
+
+    @Test
+    void staleMembershipLockFailureNeverTouchesRecipeOrPublishChildren() {
+        DinnerRecipePublishTransaction transaction = transaction();
+        when(authorizer.requireMembershipForUpdate(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertError(
+                () -> transaction.publishChecked(7L, 101L, 4L),
+                ErrorCode.DINNER_HOUSEHOLD_REQUIRED);
+
+        verifyNoInteractions(recipeMapper, queryService, imageAssetService);
     }
 
     @Test
     void versionChangedDuringModerationPreservesDraftAndReturnsConflict() {
         DinnerRecipePublishTransaction transaction = transaction();
-        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(LOCKED_ACCESS);
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(completeDraft(5L));
 
         assertThatThrownBy(() -> transaction.publishChecked(7L, 101L, 4L))
@@ -87,7 +119,8 @@ class DinnerRecipePublishTransactionTest {
 
         assertError(() -> transaction.publishChecked(7L, 101L, 4L), ErrorCode.DINNER_RECIPE_NOT_FOUND);
 
-        verifyNoInteractions(authorizer, queryService, imageAssetService);
+        verify(authorizer).requireMembershipForUpdate(7L);
+        verifyNoInteractions(queryService, imageAssetService);
         verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
     }
 
@@ -97,7 +130,7 @@ class DinnerRecipePublishTransactionTest {
         DinnerRecipeEntity draft = completeDraft(4L);
         draft.setCreatorId(8L);
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
-        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(LOCKED_ACCESS);
 
         assertError(() -> transaction.publishChecked(7L, 101L, 4L), ErrorCode.FORBIDDEN);
 
@@ -111,7 +144,7 @@ class DinnerRecipePublishTransactionTest {
         DinnerRecipeEntity draft = completeDraft(4L);
         draft.setStatus("PUBLISHED");
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
-        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(LOCKED_ACCESS);
 
         assertError(() -> transaction.publishChecked(7L, 101L, 4L), ErrorCode.FORBIDDEN);
 
@@ -135,8 +168,8 @@ class DinnerRecipePublishTransactionTest {
     void incompleteLockedDraftDoesNotResolveImageOrUpdate() {
         DinnerRecipePublishTransaction transaction = transaction();
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(completeDraft(4L));
-        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
-        when(queryService.detail(7L, 101L)).thenReturn(incompleteResponse());
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(LOCKED_ACCESS);
+        when(queryService.detail(LOCKED_ACCESS, 101L)).thenReturn(incompleteResponse());
 
         assertThatThrownBy(() -> transaction.publishChecked(7L, 101L, 4L))
                 .isInstanceOf(RecipeValidationException.class);
@@ -149,15 +182,15 @@ class DinnerRecipePublishTransactionTest {
     void invalidLockedImageDoesNotUpdateOrReadPublishedDetail() {
         DinnerRecipePublishTransaction transaction = transaction();
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(completeDraft(4L));
-        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
-        when(queryService.detail(7L, 101L)).thenReturn(completeResponse());
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(LOCKED_ACCESS);
+        when(queryService.detail(LOCKED_ACCESS, 101L)).thenReturn(completeResponse());
         when(imageAssetService.requireApproved(9L))
                 .thenThrow(new BusinessException(ErrorCode.DINNER_RECIPE_IMAGE_INVALID));
 
         assertError(() -> transaction.publishChecked(7L, 101L, 4L),
                 ErrorCode.DINNER_RECIPE_IMAGE_INVALID);
 
-        verify(queryService).detail(7L, 101L);
+        verify(queryService).detail(LOCKED_ACCESS, 101L);
         verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
     }
 
@@ -165,15 +198,15 @@ class DinnerRecipePublishTransactionTest {
     void duplicateKeyDuringUpdateReturnsVersionConflictWithoutPublishedDetail() {
         DinnerRecipePublishTransaction transaction = transaction();
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(completeDraft(4L));
-        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
-        when(queryService.detail(7L, 101L)).thenReturn(completeResponse());
+        when(authorizer.requireMembershipForUpdate(7L)).thenReturn(LOCKED_ACCESS);
+        when(queryService.detail(LOCKED_ACCESS, 101L)).thenReturn(completeResponse());
         when(recipeMapper.updateById(any(DinnerRecipeEntity.class)))
                 .thenThrow(new DuplicateKeyException("duplicate"));
 
         assertError(() -> transaction.publishChecked(7L, 101L, 4L),
                 ErrorCode.DINNER_RECIPE_VERSION_CONFLICT);
 
-        verify(queryService).detail(7L, 101L);
+        verify(queryService).detail(LOCKED_ACCESS, 101L);
     }
 
     @Test
@@ -185,7 +218,8 @@ class DinnerRecipePublishTransactionTest {
         assertError(() -> transaction.publishChecked(7L, 101L, 4L),
                 ErrorCode.DINNER_RECIPE_VERSION_CONFLICT);
 
-        verifyNoInteractions(authorizer, queryService, imageAssetService);
+        verify(authorizer).requireMembershipForUpdate(7L);
+        verifyNoInteractions(queryService, imageAssetService);
         verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
     }
 

@@ -5,6 +5,7 @@ import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.LockedHouseholdContext;
 import com.osheeep.server.dinner.image.DinnerImageAssetService;
 import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
 import com.osheeep.server.dinner.menu.dto.MenuDishResponse;
@@ -37,6 +38,7 @@ import java.util.Objects;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -96,14 +98,17 @@ public class DinnerMenuService {
         this.clock = clock;
     }
 
+    @Transactional
     public TodayMenuResponse today(Long userId) {
-        ActiveHouseholdAccess access = householdAccessService.requireActiveHousehold(userId);
+        LockedHouseholdContext lockedContext =
+                householdAccessService.lockActiveHouseholdContext(userId);
+        ActiveHouseholdAccess access = lockedContext.access();
         LocalDate menuDate = businessDateResolver.resolve(access.timezone(), clock.instant());
-        DinnerMenuEntity menu = findMenu(access.householdId(), menuDate);
+        DinnerMenuEntity menu = lockMenuForUpdate(access.householdId(), menuDate);
         if (menu == null) {
-            menu = createDraft(access.householdId(), menuDate);
+            menu = createDraftLocked(access.householdId(), menuDate);
         }
-        return response(menu, userId, access);
+        return responseForLockedContext(userId, lockedContext, menu);
     }
 
     @Transactional
@@ -192,14 +197,7 @@ public class DinnerMenuService {
         return response(context, userId);
     }
 
-    private DinnerMenuEntity findMenu(Long householdId, LocalDate menuDate) {
-        return menuMapper.selectOne(Wrappers.<DinnerMenuEntity>lambdaQuery()
-                .eq(DinnerMenuEntity::getHouseholdId, householdId)
-                .eq(DinnerMenuEntity::getMenuDate, menuDate)
-                .last("LIMIT 1"));
-    }
-
-    private DinnerMenuEntity createDraft(Long householdId, LocalDate menuDate) {
+    private DinnerMenuEntity createDraftLocked(Long householdId, LocalDate menuDate) {
         DinnerMenuEntity menu = new DinnerMenuEntity();
         menu.setHouseholdId(householdId);
         menu.setMenuDate(menuDate);
@@ -209,12 +207,35 @@ public class DinnerMenuService {
             menuMapper.insert(menu);
             return menu;
         } catch (DuplicateKeyException exception) {
-            return findMenu(householdId, menuDate);
+            DinnerMenuEntity winner = lockMenuForUpdate(householdId, menuDate);
+            if (winner == null) {
+                throw exception;
+            }
+            return winner;
+        } catch (PessimisticLockingFailureException exception) {
+            throw new BusinessException(ErrorCode.DINNER_MENU_VERSION_CONFLICT);
         }
     }
 
     private TodayMenuResponse response(MenuContext context, Long currentUserId) {
-        return response(context.menu(), currentUserId, context.access());
+        return responseForLockedContext(
+                currentUserId, context.lockedContext(), context.menu());
+    }
+
+    public TodayMenuResponse responseForLockedContext(
+            Long currentUserId,
+            LockedHouseholdContext lockedContext,
+            DinnerMenuEntity menu
+    ) {
+        ActiveHouseholdAccess access =
+                lockedContext == null ? null : lockedContext.access();
+        if (access == null
+                || menu == null
+                || !Objects.equals(currentUserId, access.userId())
+                || !Objects.equals(menu.getHouseholdId(), access.householdId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
+        return response(menu, currentUserId, access);
     }
 
     private TodayMenuResponse response(
@@ -349,14 +370,23 @@ public class DinnerMenuService {
     }
 
     private MenuContext lockToday(Long userId) {
-        ActiveHouseholdAccess access = householdAccessService.requireActiveHousehold(userId);
+        LockedHouseholdContext lockedContext =
+                householdAccessService.lockActiveHouseholdContext(userId);
+        ActiveHouseholdAccess access = lockedContext.access();
         LocalDate menuDate = businessDateResolver.resolve(access.timezone(), clock.instant());
-        DinnerMenuEntity menu = menuMapper.selectByHouseholdAndDateForUpdate(
-                access.householdId(), menuDate);
+        DinnerMenuEntity menu = lockMenuForUpdate(access.householdId(), menuDate);
         if (menu == null) {
             throw new BusinessException(ErrorCode.BUSINESS_ERROR, "Today's dinner menu was not initialized");
         }
-        return new MenuContext(access, menu);
+        return new MenuContext(lockedContext, menu);
+    }
+
+    private DinnerMenuEntity lockMenuForUpdate(Long householdId, LocalDate menuDate) {
+        try {
+            return menuMapper.selectByHouseholdAndDateForUpdate(householdId, menuDate);
+        } catch (PessimisticLockingFailureException exception) {
+            throw new BusinessException(ErrorCode.DINNER_MENU_VERSION_CONFLICT);
+        }
     }
 
     private boolean isPreMembershipCompletedMenu(
@@ -476,7 +506,13 @@ public class DinnerMenuService {
         return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
     }
 
-    private record MenuContext(ActiveHouseholdAccess access, DinnerMenuEntity menu) {
+    private record MenuContext(
+            LockedHouseholdContext lockedContext,
+            DinnerMenuEntity menu
+    ) {
+        private ActiveHouseholdAccess access() {
+            return lockedContext.access();
+        }
     }
 
     private record ValidatedRecipe(

@@ -25,6 +25,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -63,7 +64,7 @@ public class DinnerRecipeDraftService {
 
     @Transactional
     public RecipeDraftResponse create(Long userId) {
-        RecipeAccess access = authorizer.requireMembership(userId);
+        RecipeAccess access = authorizer.requireMembershipForUpdate(userId);
         DinnerRecipeEntity draft = new DinnerRecipeEntity();
         draft.setScope("HOUSEHOLD");
         draft.setHouseholdId(access.householdId());
@@ -71,7 +72,7 @@ public class DinnerRecipeDraftService {
         draft.setLastModifiedBy(userId);
         draft.setStatus("DRAFT");
         draft.setVersion(1L);
-        recipeMapper.insert(draft);
+        insertDraft(draft);
         return new RecipeDraftResponse(
                 draft.getId(), draft.getStatus(), draft.getVersion(),
                 draft.getName(), draft.getCategory(), draft.getFlavor(),
@@ -86,7 +87,8 @@ public class DinnerRecipeDraftService {
             Long recipeId,
             UpdateRecipeBasicInfoRequest request
     ) {
-        DinnerRecipeEntity draft = lockOwnedDraft(userId, recipeId, request.version());
+        LockedDraft lockedDraft = lockOwnedDraft(userId, recipeId, request.version());
+        DinnerRecipeEntity draft = lockedDraft.draft();
         draft.setName(normalize(request.name()));
         draft.setCategory(normalize(request.category()));
         draft.setFlavor(normalize(request.flavor()));
@@ -99,7 +101,7 @@ public class DinnerRecipeDraftService {
             methodMapper.updateById(method);
         }
         advance(draft, userId);
-        return queryService.detail(userId, recipeId);
+        return queryService.detail(lockedDraft.access(), recipeId);
     }
 
     @Transactional
@@ -108,7 +110,8 @@ public class DinnerRecipeDraftService {
             Long recipeId,
             ReplaceRecipeIngredientsRequest request
     ) {
-        DinnerRecipeEntity draft = lockOwnedDraft(userId, recipeId, request.version());
+        LockedDraft lockedDraft = lockOwnedDraft(userId, recipeId, request.version());
+        DinnerRecipeEntity draft = lockedDraft.draft();
         validateIngredients(request.ingredients(), draft.getHouseholdId());
 
         recipeIngredientMapper.delete(
@@ -126,7 +129,7 @@ public class DinnerRecipeDraftService {
             recipeIngredientMapper.insert(ingredient);
         }
         advance(draft, userId);
-        return queryService.detail(userId, recipeId);
+        return queryService.detail(lockedDraft.access(), recipeId);
     }
 
     @Transactional
@@ -135,7 +138,8 @@ public class DinnerRecipeDraftService {
             Long recipeId,
             UpdateDefaultMethodRequest request
     ) {
-        DinnerRecipeEntity draft = lockOwnedDraft(userId, recipeId, request.version());
+        LockedDraft lockedDraft = lockOwnedDraft(userId, recipeId, request.version());
+        DinnerRecipeEntity draft = lockedDraft.draft();
         DinnerRecipeMethodEntity method = findDefaultMethod(recipeId);
         if (method == null) {
             method = new DinnerRecipeMethodEntity();
@@ -168,7 +172,7 @@ public class DinnerRecipeDraftService {
             stepMapper.insert(step);
         }
         advance(draft, userId);
-        return queryService.detail(userId, recipeId);
+        return queryService.detail(lockedDraft.access(), recipeId);
     }
 
     @Transactional
@@ -177,32 +181,55 @@ public class DinnerRecipeDraftService {
             Long recipeId,
             SelectRecipeImageRequest request
     ) {
-        DinnerRecipeEntity draft = lockOwnedDraft(userId, recipeId, request.version());
+        LockedDraft lockedDraft = lockOwnedDraft(userId, recipeId, request.version());
+        DinnerRecipeEntity draft = lockedDraft.draft();
         if (request.imageAssetId() != null) {
             imageAssetService.requireApproved(request.imageAssetId());
         }
         draft.setImageAssetId(request.imageAssetId());
         advance(draft, userId);
-        return queryService.detail(userId, recipeId);
+        return queryService.detail(lockedDraft.access(), recipeId);
     }
 
-    private DinnerRecipeEntity lockOwnedDraft(
+    private LockedDraft lockOwnedDraft(
             Long userId,
             Long recipeId,
             long expectedVersion
     ) {
-        DinnerRecipeEntity draft = recipeMapper.selectByIdForUpdate(recipeId);
+        RecipeAccess access = authorizer.requireMembershipForUpdate(userId);
+        DinnerRecipeEntity draft = selectDraftForUpdate(recipeId);
         if (draft == null) {
             throw new BusinessException(ErrorCode.DINNER_RECIPE_NOT_FOUND);
         }
         if (!"DRAFT".equals(draft.getStatus())
-                || !Objects.equals(userId, draft.getCreatorId())) {
+                || !Objects.equals(userId, draft.getCreatorId())
+                || !Objects.equals(access.householdId(), draft.getHouseholdId())) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
         if (!Objects.equals(draft.getVersion(), expectedVersion)) {
-            throw new BusinessException(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT);
+            throw recipeVersionConflict();
         }
-        return draft;
+        return new LockedDraft(access, draft);
+    }
+
+    private void insertDraft(DinnerRecipeEntity draft) {
+        try {
+            recipeMapper.insert(draft);
+        } catch (PessimisticLockingFailureException exception) {
+            throw recipeVersionConflict();
+        }
+    }
+
+    private DinnerRecipeEntity selectDraftForUpdate(Long recipeId) {
+        try {
+            return recipeMapper.selectByIdForUpdate(recipeId);
+        } catch (PessimisticLockingFailureException exception) {
+            throw recipeVersionConflict();
+        }
+    }
+
+    private BusinessException recipeVersionConflict() {
+        return new BusinessException(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT);
     }
 
     private void advance(DinnerRecipeEntity draft, Long userId) {
@@ -253,5 +280,8 @@ public class DinnerRecipeDraftService {
 
     private String normalizeStep(String value) {
         return value == null ? "" : value.strip();
+    }
+
+    private record LockedDraft(RecipeAccess access, DinnerRecipeEntity draft) {
     }
 }

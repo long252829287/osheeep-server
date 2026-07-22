@@ -142,9 +142,10 @@ class DinnerRecipePublicationBoundaryTest {
     }
 
     private void prepareValidPublish() {
-        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
-        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft());
-        when(queryService.detail(7L, 101L)).thenReturn(
+        RecipeAccess readAccess = new RecipeAccess(7L, 70L);
+        when(authorizer.requireMembership(7L)).thenReturn(readAccess);
+        when(authorizer.requireOwnedDraft(readAccess, 101L)).thenReturn(draft());
+        when(queryService.detail(readAccess, 101L)).thenReturn(
                 response("DRAFT", 4L), response("DRAFT", 4L), response("PUBLISHED", 5L));
         WechatUserIdentityEntity identity = new WechatUserIdentityEntity();
         identity.setUserId(7L);

@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -16,6 +18,7 @@ import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.LockedHouseholdContext;
 import com.osheeep.server.dinner.ingredient.dto.IngredientResponse;
 import com.osheeep.server.dinner.ingredient.dto.InventoryItemResponse;
 import com.osheeep.server.dinner.ingredient.entity.DinnerHouseholdInventoryEntity;
@@ -31,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.CannotAcquireLockException;
@@ -79,12 +83,48 @@ class DinnerIngredientServiceTest {
     }
 
     @Test
+    void upsertLocksHouseholdContextBeforeIngredientAndInventory() {
+        DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 2L);
+        stubLockedAccess(7L, 11L);
+        when(ingredientMapper.selectById(3L)).thenReturn(
+                ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
+        when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
+                .thenReturn(item);
+
+        assertThatThrownBy(() -> service.upsertInventoryItem(
+                7L, 3L, BigDecimal.ONE, "枚", 1L))
+                .isInstanceOf(BusinessException.class);
+
+        InOrder order = inOrder(accessService, ingredientMapper, inventoryMapper);
+        order.verify(accessService).lockActiveHouseholdContext(7L);
+        order.verify(ingredientMapper).selectById(3L);
+        order.verify(inventoryMapper)
+                .selectByHouseholdAndIngredientForUpdate(11L, 3L);
+    }
+
+    @ParameterizedTest(name = "{0} locked household context failure stops inventory upsert")
+    @ValueSource(strings = {"STALE_MEMBERSHIP", "INACTIVE_HOUSEHOLD"})
+    void staleHouseholdContextStopsInventoryUpsertBeforeDomainLookup(String reason) {
+        when(accessService.lockActiveHouseholdContext(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.upsertInventoryItem(
+                7L, 3L, BigDecimal.ONE, "枚", 0L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThat(reason).isNotBlank();
+        verifyNoInteractions(ingredientMapper, inventoryMapper);
+    }
+
+    @Test
     void creatingAnInventoryItemReturnsDatabaseManagedTimestamp() {
         DinnerHouseholdInventoryEntity persisted = inventory(11L, 3L, "8.000", "枚", 1L);
         persisted.setId(21L);
         persisted.setUpdatedBy(7L);
         persisted.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 7, 30));
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
@@ -109,7 +149,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void newInventoryItemRejectsNonzeroExpectedVersion() {
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
@@ -125,7 +165,7 @@ class DinnerIngredientServiceTest {
     @Test
     void existingInventoryItemRejectsCreateOnlyExpectedVersionWithoutMutation() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 0L);
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -144,7 +184,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void concurrentInsertDuplicateKeyBecomesVersionConflict() {
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
@@ -160,7 +200,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void lockAcquisitionFailureBecomesVersionConflict() {
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -177,7 +217,7 @@ class DinnerIngredientServiceTest {
     void deadlockFailureBecomesVersionConflict() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 1L);
         item.setId(21L);
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -201,7 +241,7 @@ class DinnerIngredientServiceTest {
         persisted.setId(21L);
         persisted.setUpdatedBy(7L);
         persisted.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 7, 30));
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -232,7 +272,7 @@ class DinnerIngredientServiceTest {
     @Test
     void staleInventoryVersionDoesNotMutateTheItem() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 4L);
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -250,7 +290,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void rejectsForeignHouseholdIngredient() {
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "HOUSEHOLD", 12L, "冻豆腐", "豆制品", "块", "ACTIVE"));
 
@@ -263,7 +303,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void rejectsInactiveSystemIngredient() {
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "INACTIVE"));
 
@@ -317,17 +357,48 @@ class DinnerIngredientServiceTest {
     void deletingAnInventoryItemUsesExactVersion() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 2L);
         item.setId(21L);
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(item);
 
         service.removeInventoryItem(7L, 3L, 2L);
 
         verify(inventoryMapper).delete(any());
+        InOrder order = inOrder(accessService, inventoryMapper);
+        order.verify(accessService).lockActiveHouseholdContext(7L);
+        order.verify(inventoryMapper)
+                .selectByHouseholdAndIngredientForUpdate(11L, 3L);
+    }
+
+    @Test
+    void staleHouseholdContextStopsInventoryRemovalBeforeDomainLookup() {
+        when(accessService.lockActiveHouseholdContext(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.removeInventoryItem(7L, 3L, 1L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        verifyNoInteractions(ingredientMapper, inventoryMapper);
+    }
+
+    @Test
+    void inventoryRemovalLockFailureBecomesVersionConflict() {
+        stubLockedAccess(7L, 11L);
+        when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
+                .thenThrow(new CannotAcquireLockException("lock wait timeout"));
+
+        assertThatThrownBy(() -> service.removeInventoryItem(7L, 3L, 1L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT));
+
+        verify(inventoryMapper, never()).delete(any());
     }
 
     @Test
     void deletingMissingInventoryItemReturnsNotFound() {
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
 
         assertThatThrownBy(() -> service.removeInventoryItem(7L, 3L, 0L))
@@ -340,7 +411,7 @@ class DinnerIngredientServiceTest {
     @Test
     void staleDeleteDoesNotRemoveInventoryItem() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 2L);
-        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
+        stubLockedAccess(7L, 11L);
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(item);
 
         assertThatThrownBy(() -> service.removeInventoryItem(7L, 3L, 1L))
@@ -348,6 +419,12 @@ class DinnerIngredientServiceTest {
                         assertThat(error.errorCode())
                                 .isEqualTo(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT));
         verify(inventoryMapper, never()).delete(any());
+    }
+
+    private void stubLockedAccess(Long userId, Long householdId) {
+        LockedHouseholdContext context = mock(LockedHouseholdContext.class);
+        when(context.access()).thenReturn(access(userId, householdId));
+        when(accessService.lockActiveHouseholdContext(userId)).thenReturn(context);
     }
 
     private ActiveHouseholdAccess access(Long userId, Long householdId) {

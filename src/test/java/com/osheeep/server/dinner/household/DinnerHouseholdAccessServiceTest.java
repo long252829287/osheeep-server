@@ -230,6 +230,8 @@ class DinnerHouseholdAccessServiceTest {
         Method method = Arrays.stream(target.getClass().getMethods())
                 .filter(candidate -> candidate.getName().equals(methodName))
                 .filter(candidate -> candidate.getParameterCount() == 1)
+                .filter(candidate -> argument == null
+                        || candidate.getParameterTypes()[0].isInstance(argument))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Missing public method " + methodName));
         try {

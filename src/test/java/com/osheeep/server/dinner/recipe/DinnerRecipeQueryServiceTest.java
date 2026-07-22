@@ -21,6 +21,7 @@ import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
 import com.osheeep.server.dinner.image.DinnerImageAssetService;
 import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
+import com.osheeep.server.dinner.recipe.DinnerRecipeAuthorizer.RecipeAccess;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeListItemResponse;
 import com.osheeep.server.dinner.recipe.dto.FamilyRecipeTab;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
@@ -234,6 +235,20 @@ class DinnerRecipeQueryServiceTest {
                         error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
 
         verifyNoInteractions(ingredientMapper, methodMapper, stepMapper, imageAssetService);
+    }
+
+    @Test
+    void lockedDetailUsesTheProvidedAccessWithoutMembershipLookup() {
+        RecipeAccess lockedAccess = new RecipeAccess(7L, 70L);
+        DinnerRecipeEntity recipe = completeBasics(draft(101L, 7L));
+        when(recipeMapper.selectById(101L)).thenReturn(recipe);
+        when(ingredientMapper.selectWithIngredientNames(List.of(101L))).thenReturn(List.of());
+        when(methodMapper.selectList(any())).thenReturn(List.of());
+
+        RecipeDraftResponse result = queryService.detail(lockedAccess, 101L);
+
+        assertThat(result.id()).isEqualTo(101L);
+        verifyNoInteractions(memberMapper, householdMapper);
     }
 
     @ParameterizedTest

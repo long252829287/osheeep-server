@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -15,6 +17,9 @@ import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.LockedHouseholdContext;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
 import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
@@ -23,6 +28,7 @@ import com.osheeep.server.dinner.image.DinnerImageAssetService;
 import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
 import com.osheeep.server.dinner.ingredient.entity.DinnerIngredientEntity;
 import com.osheeep.server.dinner.ingredient.mapper.DinnerIngredientMapper;
+import com.osheeep.server.dinner.recipe.DinnerRecipeAuthorizer.RecipeAccess;
 import com.osheeep.server.dinner.recipe.dto.RecipeIngredientInput;
 import com.osheeep.server.dinner.recipe.dto.RecipeIngredientResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeMethodResponse;
@@ -41,6 +47,7 @@ import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeIngredientMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodStepMapper;
+import com.osheeep.server.user.entity.UserEntity;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -53,9 +60,12 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.CannotAcquireLockException;
 
 @ExtendWith(MockitoExtension.class)
 class DinnerRecipeDraftServiceTest {
+
+    private static final RecipeAccess LOCKED_ACCESS = new RecipeAccess(7L, 70L);
 
     @Mock private DinnerRecipeMapper recipeMapper;
     @Mock private DinnerRecipeIngredientMapper recipeIngredientMapper;
@@ -66,6 +76,8 @@ class DinnerRecipeDraftServiceTest {
     @Mock private DinnerHouseholdMemberMapper memberMapper;
     @Mock private DinnerHouseholdMapper householdMapper;
     @Mock private DinnerRecipeQueryService queryService;
+    @Mock private DinnerRecipeAuthorizer writeAuthorizer;
+    @Mock private DinnerHouseholdAccessService accessService;
 
     private DinnerRecipeAuthorizer authorizer;
     private DinnerRecipeDraftService service;
@@ -73,15 +85,13 @@ class DinnerRecipeDraftServiceTest {
     @BeforeEach
     void setUp() {
         authorizer = new DinnerRecipeAuthorizer(memberMapper, householdMapper, recipeMapper);
-        service = new DinnerRecipeDraftService(
-                recipeMapper, recipeIngredientMapper, methodMapper, stepMapper,
-                ingredientMapper, imageAssetService, authorizer, queryService);
+        service = serviceWith(writeAuthorizer);
+        lenient().when(writeAuthorizer.requireMembershipForUpdate(7L))
+                .thenReturn(LOCKED_ACCESS);
     }
 
     @Test
     void createsVersionOneDraftForTheCurrentHouseholdAndOwner() {
-        when(memberMapper.selectActiveByUserId(7L)).thenReturn(member(7L, 70L));
-        when(householdMapper.selectById(70L)).thenReturn(household(70L, "ACTIVE"));
         when(recipeMapper.insert(any(DinnerRecipeEntity.class))).thenAnswer(invocation -> {
             DinnerRecipeEntity row = invocation.getArgument(0);
             row.setId(101L);
@@ -108,9 +118,121 @@ class DinnerRecipeDraftServiceTest {
     }
 
     @Test
+    void draftCreationLocksHouseholdContextBeforeInsertingRecipe() {
+        DinnerRecipeAuthorizer lockingAuthorizer = mock(DinnerRecipeAuthorizer.class);
+        DinnerRecipeDraftService lockingService = serviceWith(lockingAuthorizer);
+        when(lockingAuthorizer.requireMembershipForUpdate(7L))
+                .thenReturn(LOCKED_ACCESS);
+        when(recipeMapper.insert(any(DinnerRecipeEntity.class))).thenAnswer(invocation -> {
+            invocation.<DinnerRecipeEntity>getArgument(0).setId(101L);
+            return 1;
+        });
+
+        lockingService.create(7L);
+
+        InOrder lockOrder = inOrder(lockingAuthorizer, recipeMapper);
+        lockOrder.verify(lockingAuthorizer).requireMembershipForUpdate(7L);
+        lockOrder.verify(recipeMapper).insert(any(DinnerRecipeEntity.class));
+    }
+
+    @Test
+    void draftCreationLockFailureBecomesRecipeVersionConflict() {
+        when(recipeMapper.insert(any(DinnerRecipeEntity.class)))
+                .thenThrow(new CannotAcquireLockException("lock wait timeout"));
+
+        assertThatThrownBy(() -> service.create(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT));
+    }
+
+    @Test
+    void draftSaveLocksHouseholdContextBeforeLockingRecipe() {
+        DinnerRecipeAuthorizer lockingAuthorizer = mock(DinnerRecipeAuthorizer.class);
+        DinnerRecipeDraftService lockingService = serviceWith(lockingAuthorizer);
+        DinnerRecipeEntity draft = draft(101L, 7L, 70L, 3L);
+        when(lockingAuthorizer.requireMembershipForUpdate(7L))
+                .thenReturn(LOCKED_ACCESS);
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
+        when(methodMapper.selectOne(any())).thenReturn(null);
+        when(queryService.detail(LOCKED_ACCESS, 101L))
+                .thenReturn(response(draft, List.of(), null));
+
+        lockingService.updateBasicInfo(
+                7L,
+                101L,
+                new UpdateRecipeBasicInfoRequest(3L, "番茄炒蛋", "家常菜", "酸甜", 2, 15));
+
+        InOrder lockOrder = inOrder(lockingAuthorizer, recipeMapper);
+        lockOrder.verify(lockingAuthorizer).requireMembershipForUpdate(7L);
+        lockOrder.verify(recipeMapper).selectByIdForUpdate(101L);
+    }
+
+    @Test
+    void staleMembershipLockFailureNeverTouchesRecipeOrDraftChildren() {
+        DinnerRecipeAuthorizer lockingAuthorizer = mock(DinnerRecipeAuthorizer.class);
+        DinnerRecipeDraftService lockingService = serviceWith(lockingAuthorizer);
+        when(lockingAuthorizer.requireMembershipForUpdate(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> lockingService.updateBasicInfo(
+                7L,
+                101L,
+                new UpdateRecipeBasicInfoRequest(3L, "番茄炒蛋", "家常菜", "酸甜", 2, 15)))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        verifyNoInteractions(
+                recipeMapper, recipeIngredientMapper, methodMapper, stepMapper,
+                ingredientMapper, imageAssetService, queryService);
+    }
+
+    @Test
+    void writeAuthorizationUsesTheCentralLockedHouseholdSnapshot() {
+        DinnerRecipeAuthorizer centralAuthorizer =
+                new DinnerRecipeAuthorizer(accessService, recipeMapper);
+        ActiveHouseholdAccess access = new ActiveHouseholdAccess(
+                7L, 70L, 11L, 3L, "OWNER",
+                LocalDateTime.of(2026, 7, 22, 4, 0), 8L, "Asia/Shanghai");
+        UserEntity actor = new UserEntity();
+        actor.setId(7L);
+        actor.setStatus("ACTIVE");
+        DinnerHouseholdMemberEntity membership = member(7L, 70L);
+        membership.setSeatNo(1);
+        LockedHouseholdContext context = new LockedHouseholdContext(
+                actor, household(70L, "ACTIVE"), List.of(membership), access);
+        when(accessService.lockActiveHouseholdContext(7L)).thenReturn(context);
+
+        assertThat(centralAuthorizer.requireMembershipForUpdate(7L))
+                .isEqualTo(LOCKED_ACCESS);
+
+        verify(accessService).lockActiveHouseholdContext(7L);
+        verifyNoInteractions(memberMapper, householdMapper, recipeMapper);
+    }
+
+    @Test
+    void draftSaveRejectsTheOwnersDraftFromAnotherHouseholdBeforeChildMutation() {
+        DinnerRecipeEntity oldHouseholdDraft = draft(101L, 7L, 71L, 3L);
+        when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(oldHouseholdDraft);
+
+        assertThatThrownBy(() -> service.updateBasicInfo(
+                7L,
+                101L,
+                new UpdateRecipeBasicInfoRequest(3L, "番茄炒蛋", "家常菜", "酸甜", 2, 15)))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+
+        verifyNoInteractions(
+                recipeIngredientMapper, methodMapper, stepMapper,
+                ingredientMapper, imageAssetService, queryService);
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+    }
+
+    @Test
     void rejectsDraftCreationWhenTheCurrentHouseholdIsNotActive() {
-        when(memberMapper.selectActiveByUserId(7L)).thenReturn(member(7L, 70L));
-        when(householdMapper.selectById(70L)).thenReturn(household(70L, "ARCHIVED"));
+        when(writeAuthorizer.requireMembershipForUpdate(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
 
         assertThatThrownBy(() -> service.create(7L))
                 .isInstanceOfSatisfying(BusinessException.class,
@@ -174,7 +296,7 @@ class DinnerRecipeDraftServiceTest {
         DinnerRecipeMethodEntity method = defaultMethod(201L, 101L, 8);
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
         when(methodMapper.selectOne(any())).thenReturn(method);
-        when(queryService.detail(7L, 101L)).thenAnswer(ignored -> response(
+        when(queryService.detail(LOCKED_ACCESS, 101L)).thenAnswer(ignored -> response(
                 draft, List.of(), null));
 
         RecipeDraftResponse saved = service.updateBasicInfo(
@@ -193,6 +315,9 @@ class DinnerRecipeDraftServiceTest {
                 row.getVersion() == 4L
                         && row.getLastModifiedBy().equals(7L)
                         && row.getName().equals("番茄炒蛋")));
+        verify(queryService).detail(LOCKED_ACCESS, 101L);
+        verify(queryService, never()).detail(7L, 101L);
+        verify(writeAuthorizer, never()).requireMembership(7L);
     }
 
     @Test
@@ -200,7 +325,7 @@ class DinnerRecipeDraftServiceTest {
         DinnerRecipeEntity draft = draft(101L, 7L, 70L, 1L);
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
         when(methodMapper.selectOne(any())).thenReturn(null);
-        when(queryService.detail(7L, 101L)).thenAnswer(ignored -> response(
+        when(queryService.detail(LOCKED_ACCESS, 101L)).thenAnswer(ignored -> response(
                 draft, List.of(), null));
 
         service.updateBasicInfo(
@@ -228,6 +353,25 @@ class DinnerRecipeDraftServiceTest {
     }
 
     @Test
+    void draftLockAcquisitionFailureBecomesRecipeVersionConflict() {
+        when(recipeMapper.selectByIdForUpdate(101L))
+                .thenThrow(new CannotAcquireLockException("lock wait timeout"));
+
+        assertThatThrownBy(() -> service.updateBasicInfo(
+                7L,
+                101L,
+                new UpdateRecipeBasicInfoRequest(1L, null, null, null, null, null)))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT));
+
+        verifyNoInteractions(
+                recipeIngredientMapper, methodMapper, stepMapper,
+                ingredientMapper, imageAssetService, queryService);
+        verify(recipeMapper, never()).updateById(any(DinnerRecipeEntity.class));
+    }
+
+    @Test
     void staleVersionNeverReplacesIngredients() {
         when(recipeMapper.selectByIdForUpdate(101L))
                 .thenReturn(draft(101L, 7L, 70L, 4L));
@@ -252,7 +396,7 @@ class DinnerRecipeDraftServiceTest {
                 .thenReturn(ingredient(1L, "SYSTEM", null, "ACTIVE", "番茄"));
         when(ingredientMapper.selectById(2L))
                 .thenReturn(ingredient(2L, "HOUSEHOLD", 70L, "ACTIVE", "鸡蛋"));
-        when(queryService.detail(7L, 101L)).thenReturn(new RecipeDraftResponse(
+        when(queryService.detail(LOCKED_ACCESS, 101L)).thenReturn(new RecipeDraftResponse(
                 101L, "DRAFT", 2L, null, null, null, null, null,
                 List.of(
                         new RecipeIngredientResponse(1L, "番茄", null, "克", true, 0),
@@ -334,7 +478,7 @@ class DinnerRecipeDraftServiceTest {
             method.setId(201L);
             return 1;
         });
-        when(queryService.detail(7L, 101L)).thenReturn(new RecipeDraftResponse(
+        when(queryService.detail(LOCKED_ACCESS, 101L)).thenReturn(new RecipeDraftResponse(
                 101L, "DRAFT", 3L, null, null, null, null, 15,
                 List.of(),
                 new RecipeMethodResponse(
@@ -403,7 +547,7 @@ class DinnerRecipeDraftServiceTest {
         ImageAssetResponse image = imageResponse(9L);
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
         when(imageAssetService.requireApproved(9L)).thenReturn(image);
-        when(queryService.detail(7L, 101L)).thenReturn(new RecipeDraftResponse(
+        when(queryService.detail(LOCKED_ACCESS, 101L)).thenReturn(new RecipeDraftResponse(
                 101L, "DRAFT", 4L, null, null, null, null, null,
                 List.of(), null, image, List.of("BASIC", "INGREDIENTS", "METHOD"), null));
 
@@ -419,7 +563,7 @@ class DinnerRecipeDraftServiceTest {
                 row.getVersion() == 4L
                         && row.getLastModifiedBy().equals(7L)
                         && row.getImageAssetId().equals(9L)));
-        verify(queryService).detail(7L, 101L);
+        verify(queryService).detail(LOCKED_ACCESS, 101L);
     }
 
     @Test
@@ -427,7 +571,7 @@ class DinnerRecipeDraftServiceTest {
         DinnerRecipeEntity draft = draft(101L, 7L, 70L, 3L);
         draft.setImageAssetId(9L);
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft);
-        when(queryService.detail(7L, 101L)).thenReturn(new RecipeDraftResponse(
+        when(queryService.detail(LOCKED_ACCESS, 101L)).thenReturn(new RecipeDraftResponse(
                 101L, "DRAFT", 4L, null, null, null, null, null,
                 List.of(), null, null,
                 List.of("BASIC", "INGREDIENTS", "METHOD", "IMAGE"), null));
@@ -510,6 +654,12 @@ class DinnerRecipeDraftServiceTest {
         member.setHistoryVisibleFrom(LocalDateTime.of(1970, 1, 1, 0, 0));
         member.setVersion(1L);
         return member;
+    }
+
+    private DinnerRecipeDraftService serviceWith(DinnerRecipeAuthorizer lockingAuthorizer) {
+        return new DinnerRecipeDraftService(
+                recipeMapper, recipeIngredientMapper, methodMapper, stepMapper,
+                ingredientMapper, imageAssetService, lockingAuthorizer, queryService);
     }
 
     private DinnerHouseholdEntity household(Long id, String status) {

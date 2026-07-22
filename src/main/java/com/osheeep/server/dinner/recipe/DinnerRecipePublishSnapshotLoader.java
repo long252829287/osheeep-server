@@ -3,6 +3,7 @@ package com.osheeep.server.dinner.recipe;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.image.DinnerImageAssetService;
+import com.osheeep.server.dinner.recipe.DinnerRecipeAuthorizer.RecipeAccess;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
 import com.osheeep.server.dinner.recipe.moderation.RecipeModerationTextBuilder;
 import java.util.Objects;
@@ -32,15 +33,12 @@ public class DinnerRecipePublishSnapshotLoader {
     }
 
     public RecipePublishSnapshot loadForModeration(Long userId, Long recipeId, long expectedVersion) {
-        DinnerRecipeAuthorizer.RecipeAccess activeMembership = authorizer.requireMembership(userId);
-        var recipe = authorizer.requireOwnedDraft(userId, recipeId);
-        if (!Objects.equals(activeMembership.householdId(), recipe.getHouseholdId())) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
+        RecipeAccess access = authorizer.requireMembership(userId);
+        var recipe = authorizer.requireOwnedDraft(access, recipeId);
         if (!Objects.equals(recipe.getVersion(), expectedVersion)) {
             throw new BusinessException(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT);
         }
-        RecipeDraftResponse detail = queryService.detail(userId, recipeId);
+        RecipeDraftResponse detail = queryService.detail(access, recipeId);
         RecipePublishSnapshot snapshot = new RecipePublishSnapshot(
                 recipe.getId(), recipe.getCreatorId(), recipe.getHouseholdId(), recipe.getVersion(),
                 detail.name(), detail.category(), detail.flavor(), detail.servings(),

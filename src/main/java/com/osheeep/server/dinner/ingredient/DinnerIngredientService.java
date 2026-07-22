@@ -5,6 +5,7 @@ import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.LockedHouseholdContext;
 import com.osheeep.server.dinner.ingredient.dto.IngredientResponse;
 import com.osheeep.server.dinner.ingredient.dto.InventoryItemResponse;
 import com.osheeep.server.dinner.ingredient.entity.DinnerHouseholdInventoryEntity;
@@ -88,7 +89,9 @@ public class DinnerIngredientService {
             String unit,
             long expectedVersion
     ) {
-        ActiveHouseholdAccess access = accessService.requireActiveHousehold(userId);
+        LockedHouseholdContext lockedContext =
+                accessService.lockActiveHouseholdContext(userId);
+        ActiveHouseholdAccess access = lockedContext.access();
         DinnerIngredientEntity ingredient = requireActiveIngredient(
                 ingredientId, access.householdId());
         DinnerHouseholdInventoryEntity item = lockInventoryItem(
@@ -121,9 +124,11 @@ public class DinnerIngredientService {
 
     @Transactional
     public void removeInventoryItem(Long userId, Long ingredientId, long expectedVersion) {
-        ActiveHouseholdAccess access = accessService.requireActiveHousehold(userId);
-        DinnerHouseholdInventoryEntity item = inventoryMapper
-                .selectByHouseholdAndIngredientForUpdate(access.householdId(), ingredientId);
+        LockedHouseholdContext lockedContext =
+                accessService.lockActiveHouseholdContext(userId);
+        ActiveHouseholdAccess access = lockedContext.access();
+        DinnerHouseholdInventoryEntity item = lockInventoryItem(
+                access.householdId(), ingredientId);
         if (item == null) {
             throw new BusinessException(ErrorCode.DINNER_INVENTORY_ITEM_NOT_FOUND);
         }

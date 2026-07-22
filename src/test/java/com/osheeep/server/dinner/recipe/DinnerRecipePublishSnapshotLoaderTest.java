@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.osheeep.server.common.error.BusinessException;
@@ -27,6 +28,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
 class DinnerRecipePublishSnapshotLoaderTest {
+    private static final RecipeAccess READ_ACCESS = new RecipeAccess(7L, 70L);
+
     @Mock private DinnerRecipeAuthorizer authorizer;
     @Mock private DinnerRecipeQueryService queryService;
     @Mock private DinnerImageAssetService imageAssetService;
@@ -34,46 +37,50 @@ class DinnerRecipePublishSnapshotLoaderTest {
     @Test
     void oldHouseholdDraftIsRejectedBeforeQueryTextOrImageLookup() {
         DinnerRecipePublishSnapshotLoader loader = loader();
-        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 71L));
-        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 4L));
+        RecipeAccess currentAccess = new RecipeAccess(7L, 71L);
+        when(authorizer.requireMembership(7L)).thenReturn(currentAccess);
+        when(authorizer.requireOwnedDraft(currentAccess, 101L))
+                .thenThrow(new BusinessException(ErrorCode.FORBIDDEN));
 
         assertThatThrownBy(() -> loader.loadForModeration(7L, 101L, 4L))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
-        verify(queryService, never()).detail(7L, 101L);
+        verifyNoInteractions(queryService);
         verify(imageAssetService, never()).requireApproved(9L);
     }
 
     @Test
     void createsStableModerationTextAfterAllPreconditionsPass() {
         DinnerRecipePublishSnapshotLoader loader = loader();
-        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
-        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 4L));
-        when(queryService.detail(7L, 101L)).thenReturn(completeDetail());
+        stubOwnedDraft(draft(70L, 4L));
+        when(queryService.detail(READ_ACCESS, 101L)).thenReturn(completeDetail());
 
         assertThat(loader.loadForModeration(7L, 101L, 4L).moderationText())
                 .isEqualTo("口味：酸甜\n做法：家常炒\n烹饪方式：炒\n1. 切番茄");
         verify(imageAssetService).requireApproved(9L);
+        verify(authorizer).requireMembership(7L);
+        verify(authorizer).requireOwnedDraft(READ_ACCESS, 101L);
+        verify(authorizer, never()).requireOwnedDraft(7L, 101L);
+        verify(queryService).detail(READ_ACCESS, 101L);
+        verify(queryService, never()).detail(7L, 101L);
     }
 
     @Test
     void versionConflictStopsBeforeQuery() {
         DinnerRecipePublishSnapshotLoader loader = loader();
-        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
-        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 5L));
+        stubOwnedDraft(draft(70L, 5L));
         assertThatThrownBy(() -> loader.loadForModeration(7L, 101L, 4L))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.errorCode())
                                 .isEqualTo(ErrorCode.DINNER_RECIPE_VERSION_CONFLICT));
-        verify(queryService, never()).detail(7L, 101L);
+        verifyNoInteractions(queryService);
     }
 
     @Test
     void incompleteDraftStopsBeforeImageAndModerationTextWork() {
         DinnerRecipePublishSnapshotLoader loader = loader();
-        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
-        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 4L));
-        when(queryService.detail(7L, 101L)).thenReturn(incompleteDetail());
+        stubOwnedDraft(draft(70L, 4L));
+        when(queryService.detail(READ_ACCESS, 101L)).thenReturn(incompleteDetail());
 
         assertThatThrownBy(() -> loader.loadForModeration(7L, 101L, 4L))
                 .isInstanceOf(RecipeValidationException.class);
@@ -85,9 +92,8 @@ class DinnerRecipePublishSnapshotLoaderTest {
     void unapprovedImageStopsBeforeModerationTextWork() {
         RecipeModerationTextBuilder textBuilder = org.mockito.Mockito.mock(RecipeModerationTextBuilder.class);
         DinnerRecipePublishSnapshotLoader loader = loader(textBuilder);
-        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
-        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 4L));
-        when(queryService.detail(7L, 101L)).thenReturn(completeDetail());
+        stubOwnedDraft(draft(70L, 4L));
+        when(queryService.detail(READ_ACCESS, 101L)).thenReturn(completeDetail());
         when(imageAssetService.requireApproved(9L))
                 .thenThrow(new BusinessException(ErrorCode.DINNER_RECIPE_IMAGE_INVALID));
 
@@ -102,9 +108,8 @@ class DinnerRecipePublishSnapshotLoaderTest {
     @Test
     void overlongMethodNameIsRejectedBeforeImageLookup() {
         DinnerRecipePublishSnapshotLoader loader = loader();
-        when(authorizer.requireMembership(7L)).thenReturn(new RecipeAccess(7L, 70L));
-        when(authorizer.requireOwnedDraft(7L, 101L)).thenReturn(draft(70L, 4L));
-        when(queryService.detail(7L, 101L)).thenReturn(detailWithLongMethodName());
+        stubOwnedDraft(draft(70L, 4L));
+        when(queryService.detail(READ_ACCESS, 101L)).thenReturn(detailWithLongMethodName());
 
         assertThatThrownBy(() -> loader.loadForModeration(7L, 101L, 4L))
                 .isInstanceOf(RecipeValidationException.class);
@@ -140,6 +145,11 @@ class DinnerRecipePublishSnapshotLoaderTest {
     private DinnerRecipePublishSnapshotLoader loader(RecipeModerationTextBuilder textBuilder) {
         return new DinnerRecipePublishSnapshotLoader(authorizer, queryService, new RecipeDraftValidator(),
                 textBuilder, imageAssetService);
+    }
+
+    private void stubOwnedDraft(DinnerRecipeEntity draft) {
+        when(authorizer.requireMembership(7L)).thenReturn(READ_ACCESS);
+        when(authorizer.requireOwnedDraft(READ_ACCESS, 101L)).thenReturn(draft);
     }
 
     private DinnerRecipeEntity draft(long householdId, long version) {

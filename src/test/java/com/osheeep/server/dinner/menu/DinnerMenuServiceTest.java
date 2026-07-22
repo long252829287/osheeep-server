@@ -3,6 +3,8 @@ package com.osheeep.server.dinner.menu;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -18,6 +20,8 @@ import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
 import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.LockedHouseholdContext;
+import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
 import com.osheeep.server.dinner.image.DinnerImageAssetService;
 import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
 import com.osheeep.server.dinner.menu.dto.MenuDishResponse;
@@ -34,6 +38,7 @@ import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeMethodEntity;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodMapper;
+import com.osheeep.server.user.entity.UserEntity;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -51,8 +56,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.CannotAcquireLockException;
 
 @ExtendWith(MockitoExtension.class)
 class DinnerMenuServiceTest {
@@ -148,7 +155,7 @@ class DinnerMenuServiceTest {
     @ParameterizedTest(name = "{0} membership cannot read its former household menu")
     @MethodSource("inactiveMembershipStatuses")
     void todayRejectsInactiveMembership(String membershipStatus) {
-        when(householdAccessService.requireActiveHousehold(7L))
+        when(householdAccessService.lockActiveHouseholdContext(7L))
                 .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
 
         assertThatThrownBy(() -> service.today(7L))
@@ -163,7 +170,7 @@ class DinnerMenuServiceTest {
     @ParameterizedTest(name = "ACTIVE membership rejects {0} household")
     @MethodSource("unavailableHouseholds")
     void todayRejectsActiveMembershipWithoutActiveHousehold(String reason) {
-        when(householdAccessService.requireActiveHousehold(7L))
+        when(householdAccessService.lockActiveHouseholdContext(7L))
                 .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
 
         assertThatThrownBy(() -> service.today(7L))
@@ -173,6 +180,53 @@ class DinnerMenuServiceTest {
 
         assertThat(reason).isNotBlank();
         verifyNoInteractions(menuMapper, selectionMapper, recipeMapper);
+    }
+
+    @Test
+    void staleLockedContextPreventsTodayMenuInitialization() {
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.today(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        verify(menuMapper, never()).insert(any(DinnerMenuEntity.class));
+        verifyNoInteractions(selectionMapper, recipeMapper);
+    }
+
+    @Test
+    void todayMapsMenuLockFailureToVersionConflict() {
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(lockedContext(access()));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11)))
+                .thenThrow(new CannotAcquireLockException("timeout"));
+
+        assertThatThrownBy(() -> service.today(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_MENU_VERSION_CONFLICT));
+
+        verify(menuMapper, never()).insert(any(DinnerMenuEntity.class));
+        verifyNoInteractions(selectionMapper, recipeMapper);
+    }
+
+    @Test
+    void selectionUpdateMapsMenuLockFailureToVersionConflict() {
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(lockedContext(access()));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11)))
+                .thenThrow(new CannotAcquireLockException("timeout"));
+
+        assertThatThrownBy(() -> service.updateSelections(7L, List.of(1L), 4L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_MENU_VERSION_CONFLICT));
+
+        verifyNoInteractions(selectionMapper, recipeMapper, catalogAssembler);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -227,9 +281,10 @@ class DinnerMenuServiceTest {
         menu.setConfirmedAt(LocalDateTime.of(2026, 7, 11, 9, 30));
         menu.setCompletedBy(8L);
         menu.setCompletedAt(LocalDateTime.of(2026, 7, 11, 10, 0));
-        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(
-                access(LocalDateTime.of(2026, 7, 11, 11, 0)));
-        when(menuMapper.selectOne(any())).thenReturn(menu);
+        when(householdAccessService.lockActiveHouseholdContext(7L)).thenReturn(
+                lockedContext(access(LocalDateTime.of(2026, 7, 11, 11, 0))));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11))).thenReturn(menu);
 
         var result = service.today(7L);
 
@@ -260,8 +315,10 @@ class DinnerMenuServiceTest {
         DinnerMenuEntity menu = menu(31L);
         menu.setStatus("COMPLETED");
         menu.setCompletedAt(null);
-        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
-        when(menuMapper.selectOne(any())).thenReturn(menu);
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(lockedContext(access()));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11))).thenReturn(menu);
 
         var result = service.today(7L);
 
@@ -276,9 +333,10 @@ class DinnerMenuServiceTest {
         DinnerMenuEntity menu = menu(31L);
         menu.setStatus("COMPLETED");
         menu.setCompletedAt(visibleFrom);
-        when(householdAccessService.requireActiveHousehold(7L))
-                .thenReturn(access(visibleFrom));
-        when(menuMapper.selectOne(any())).thenReturn(menu);
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(lockedContext(access(visibleFrom)));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11))).thenReturn(menu);
         when(selectionMapper.selectList(any())).thenReturn(List.of());
 
         var result = service.today(7L);
@@ -293,8 +351,11 @@ class DinnerMenuServiceTest {
         DinnerMenuEntity menu = menu(31L);
         menu.setStatus("COMPLETED");
         menu.setCompletedAt(LocalDateTime.of(2026, 7, 11, 10, 0));
-        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(
+        LockedHouseholdContext context = mock(LockedHouseholdContext.class);
+        when(context.access()).thenReturn(
                 access(LocalDateTime.of(2026, 7, 11, 11, 0)));
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(context);
         when(menuMapper.selectByHouseholdAndDateForUpdate(
                 11L, LocalDate.of(2026, 7, 11))).thenReturn(menu);
         when(actionMapper.selectOne(any())).thenReturn(new DinnerMenuActionEntity());
@@ -408,8 +469,10 @@ class DinnerMenuServiceTest {
 
     @Test
     void todayCreatesTheBusinessDayDraftWhenMissing() {
-        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
-        when(menuMapper.selectOne(any())).thenReturn(null);
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(lockedContext(access()));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11))).thenReturn(null);
         when(menuMapper.insert(any(DinnerMenuEntity.class))).thenAnswer(invocation -> {
             invocation.<DinnerMenuEntity>getArgument(0).setId(31L);
             return 1;
@@ -422,6 +485,61 @@ class DinnerMenuServiceTest {
         assertThat(result.status()).isEqualTo("DRAFT");
         assertThat(result.version()).isZero();
         verify(menuMapper).insert(any(DinnerMenuEntity.class));
+        InOrder order = inOrder(householdAccessService, menuMapper);
+        order.verify(householdAccessService).lockActiveHouseholdContext(7L);
+        order.verify(menuMapper).selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11));
+        order.verify(menuMapper).insert(any(DinnerMenuEntity.class));
+    }
+
+    @Test
+    void todayMapsDraftInsertLockFailureToVersionConflict() {
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(lockedContext(access()));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11))).thenReturn(null);
+        when(menuMapper.insert(any(DinnerMenuEntity.class)))
+                .thenThrow(new CannotAcquireLockException("timeout"));
+
+        assertThatThrownBy(() -> service.today(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_MENU_VERSION_CONFLICT));
+
+        verifyNoInteractions(selectionMapper, recipeMapper, catalogAssembler);
+    }
+
+    @Test
+    void todayRelocksTheWinningDraftAfterDuplicateInitialization() {
+        DinnerMenuEntity winner = menu(31L);
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(lockedContext(access()));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11)))
+                .thenReturn(null)
+                .thenReturn(winner);
+        when(menuMapper.insert(any(DinnerMenuEntity.class)))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("duplicate"));
+        when(selectionMapper.selectList(any())).thenReturn(List.of());
+
+        var result = service.today(7L);
+
+        assertThat(result.id()).isEqualTo(31L);
+        verify(menuMapper, times(2)).selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11));
+    }
+
+    @Test
+    void lockedContextResponseRejectsMenuFromAnotherHousehold() {
+        DinnerMenuEntity foreignMenu = menu(31L);
+        foreignMenu.setHouseholdId(12L);
+
+        assertThatThrownBy(() -> service.responseForLockedContext(
+                7L, lockedContext(access()), foreignMenu))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+
+        verifyNoInteractions(selectionMapper, recipeMapper, methodMapper, imageAssetService);
     }
 
     @Test
@@ -462,6 +580,25 @@ class DinnerMenuServiceTest {
         verify(selectionMapper, never()).delete(any());
         verify(selectionMapper, never()).insert(any(DinnerMenuSelectionEntity.class));
         verifyNoInteractions(recipeMapper, catalogAssembler);
+        InOrder order = inOrder(householdAccessService, menuMapper);
+        order.verify(householdAccessService).lockActiveHouseholdContext(7L);
+        order.verify(menuMapper).selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11));
+    }
+
+    @Test
+    void staleHouseholdContextStopsSelectionUpdateBeforeMenuLookup() {
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.updateSelections(7L, List.of(1L), 4L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        verifyNoInteractions(
+                menuMapper, selectionMapper, actionMapper, recipeMapper, methodMapper,
+                imageAssetService, catalogAssembler);
     }
 
     @Test
@@ -493,6 +630,27 @@ class DinnerMenuServiceTest {
                 7L, 4L, "00000000-0000-4000-8000-000000000002"))
                 .isInstanceOfSatisfying(BusinessException.class, error ->
                         assertThat(error.errorCode()).isEqualTo(ErrorCode.DINNER_MENU_EMPTY));
+        InOrder order = inOrder(householdAccessService, menuMapper, actionMapper);
+        order.verify(householdAccessService).lockActiveHouseholdContext(7L);
+        order.verify(menuMapper).selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11));
+        order.verify(actionMapper).selectOne(any());
+    }
+
+    @Test
+    void staleHouseholdContextStopsConfirmationBeforeMenuLookup() {
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.confirm(
+                7L, 4L, "00000000-0000-4000-8000-000000000090"))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        verifyNoInteractions(
+                menuMapper, selectionMapper, actionMapper, recipeMapper, methodMapper,
+                imageAssetService, catalogAssembler);
     }
 
     @Test
@@ -579,14 +737,22 @@ class DinnerMenuServiceTest {
     }
 
     private void stubLockedContext(DinnerMenuEntity menu) {
-        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(lockedContext(access()));
         when(menuMapper.selectByHouseholdAndDateForUpdate(
                 11L, LocalDate.of(2026, 7, 11))).thenReturn(menu);
     }
 
     private void stubTodayContext(DinnerMenuEntity menu) {
-        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
-        when(menuMapper.selectOne(any())).thenReturn(menu);
+        when(householdAccessService.lockActiveHouseholdContext(7L))
+                .thenReturn(lockedContext(access()));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11))).thenReturn(menu);
+    }
+
+    private static LockedHouseholdContext lockedContext(ActiveHouseholdAccess access) {
+        return new LockedHouseholdContext(
+                new UserEntity(), new DinnerHouseholdEntity(), List.of(), access);
     }
 
     private static ActiveHouseholdAccess access() {
