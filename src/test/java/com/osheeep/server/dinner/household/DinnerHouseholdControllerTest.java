@@ -20,6 +20,7 @@ import com.osheeep.server.dinner.household.dto.HouseholdCreatedResponse;
 import com.osheeep.server.dinner.household.dto.HouseholdInviteStatusResponse;
 import com.osheeep.server.dinner.household.dto.HouseholdManagementResponse;
 import com.osheeep.server.dinner.household.dto.HouseholdMemberResponse;
+import com.osheeep.server.dinner.household.dto.HouseholdMutationResponse;
 import com.osheeep.server.dinner.household.dto.HouseholdResponse;
 import java.time.Instant;
 import java.util.List;
@@ -48,6 +49,8 @@ class DinnerHouseholdControllerTest {
 
     private static final Instant JOINED_AT = Instant.parse("2026-07-11T06:00:00Z");
     private static final Instant EXPIRES_AT = Instant.parse("2026-07-12T06:00:00Z");
+    private static final String LEAVE_KEY = "00000000-0000-4000-8000-000000000031";
+    private static final String REMOVAL_KEY = "00000000-0000-4000-8000-000000000032";
 
     @Autowired private MockMvc mockMvc;
     @Autowired private JwtService jwtService;
@@ -55,11 +58,14 @@ class DinnerHouseholdControllerTest {
     @MockitoBean
     private DinnerHouseholdService householdService;
 
+    @MockitoBean
+    private DinnerHouseholdOperationService householdOperationService;
+
     private String token;
 
     @BeforeEach
     void setUp() {
-        reset(householdService);
+        reset(householdService, householdOperationService);
         token = jwtService.generateToken(new CurrentUser(7L, "wx_user"));
     }
 
@@ -337,6 +343,204 @@ class DinnerHouseholdControllerTest {
     }
 
     @Test
+    void leaveForwardsConcurrencyAndIdempotencyInputsAndReturnsMinimalMutationResult() throws Exception {
+        when(householdOperationService.leave(7L, 32L, 7L, LEAVE_KEY))
+                .thenReturn(new HouseholdMutationResponse("MEMBER_LEAVE", false, false, 8L));
+
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/me/leave"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":32,\"expectedVersion\":7,"
+                                + "\"idempotencyKey\":\"" + LEAVE_KEY + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.operationType").value("MEMBER_LEAVE"))
+                .andExpect(jsonPath("$.data.replayed").value(false))
+                .andExpect(jsonPath("$.data.actorHasHousehold").value(false))
+                .andExpect(jsonPath("$.data.householdVersion").value(8))
+                .andExpect(jsonPath("$.data.actorMembershipId").doesNotExist())
+                .andExpect(jsonPath("$.data.targetMembershipId").doesNotExist())
+                .andExpect(jsonPath("$.data.idempotencyKey").doesNotExist());
+
+        verify(householdOperationService).leave(7L, 32L, 7L, LEAVE_KEY);
+    }
+
+    @Test
+    void removalForwardsPathTargetAndReturnsReplayMarker() throws Exception {
+        when(householdOperationService.remove(7L, 31L, 7L, 32L, 2L, REMOVAL_KEY))
+                .thenReturn(new HouseholdMutationResponse("OWNER_REMOVE", true, true, 8L));
+
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/32/removal"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                                + "\"targetMembershipVersion\":2,"
+                                + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.operationType").value("OWNER_REMOVE"))
+                .andExpect(jsonPath("$.data.replayed").value(true))
+                .andExpect(jsonPath("$.data.actorHasHousehold").value(true))
+                .andExpect(jsonPath("$.data.householdVersion").value(8))
+                .andExpect(jsonPath("$.data.actorMembershipId").doesNotExist())
+                .andExpect(jsonPath("$.data.targetMembershipId").doesNotExist())
+                .andExpect(jsonPath("$.data.idempotencyKey").doesNotExist());
+
+        verify(householdOperationService).remove(7L, 31L, 7L, 32L, 2L, REMOVAL_KEY);
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidLeaveRequests")
+    void leaveRejectsInvalidRequestBodiesBeforeCallingService(String body) throws Exception {
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/me/leave"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        verifyNoInteractions(householdOperationService);
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidRemovalRequests")
+    void removalRejectsInvalidRequestBodiesBeforeCallingService(String body) throws Exception {
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/32/removal"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        verifyNoInteractions(householdOperationService);
+    }
+
+    @Test
+    void removalRejectsNonPositiveTargetMembershipIdBeforeCallingService() throws Exception {
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/0/removal"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                                + "\"targetMembershipVersion\":2,"
+                                + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        verifyNoInteractions(householdOperationService);
+    }
+
+    @Test
+    void removalRejectsMalformedTargetMembershipIdBeforeCallingService() throws Exception {
+        mockMvc.perform(authenticated(post(
+                        "/api/dinner/household/members/not-a-number/removal"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                                + "\"targetMembershipVersion\":2,"
+                                + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        verifyNoInteractions(householdOperationService);
+    }
+
+    @Test
+    void leaveMapsStrictUuidV4RejectionFromOperationService() throws Exception {
+        String versionThreeUuid = "00000000-0000-3000-8000-000000000031";
+        when(householdOperationService.leave(7L, 32L, 7L, versionThreeUuid))
+                .thenThrow(new BusinessException(ErrorCode.VALIDATION_ERROR));
+
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/me/leave"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":32,\"expectedVersion\":7,"
+                                + "\"idempotencyKey\":\"" + versionThreeUuid + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"));
+
+        verify(householdOperationService).leave(7L, 32L, 7L, versionThreeUuid);
+    }
+
+    @Test
+    void leaveMapsOwnerCannotLeaveToConflict() throws Exception {
+        when(householdOperationService.leave(7L, 31L, 7L, LEAVE_KEY))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_OWNER_CANNOT_LEAVE));
+
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/me/leave"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                                + "\"idempotencyKey\":\"" + LEAVE_KEY + "\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("DINNER_HOUSEHOLD_OWNER_CANNOT_LEAVE"));
+    }
+
+    @Test
+    void leaveMapsHouseholdVersionConflict() throws Exception {
+        when(householdOperationService.leave(7L, 32L, 6L, LEAVE_KEY))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_VERSION_CONFLICT));
+
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/me/leave"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":32,\"expectedVersion\":6,"
+                                + "\"idempotencyKey\":\"" + LEAVE_KEY + "\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("DINNER_HOUSEHOLD_VERSION_CONFLICT"));
+    }
+
+    @Test
+    void removalMapsOwnerPermissionFailureToForbidden() throws Exception {
+        when(householdOperationService.remove(7L, 32L, 7L, 31L, 3L, REMOVAL_KEY))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_OWNER_REQUIRED));
+
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/31/removal"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":32,\"expectedVersion\":7,"
+                                + "\"targetMembershipVersion\":3,"
+                                + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("DINNER_HOUSEHOLD_OWNER_REQUIRED"));
+    }
+
+    @Test
+    void removalMapsHiddenOrForeignTargetToNotFound() throws Exception {
+        when(householdOperationService.remove(7L, 31L, 7L, 99L, 1L, REMOVAL_KEY))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_MEMBER_NOT_FOUND));
+
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/99/removal"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                                + "\"targetMembershipVersion\":1,"
+                                + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("DINNER_HOUSEHOLD_MEMBER_NOT_FOUND"));
+    }
+
+    @Test
+    void removalMapsMembershipStateConflict() throws Exception {
+        when(householdOperationService.remove(7L, 31L, 7L, 32L, 1L, REMOVAL_KEY))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_MEMBER_STATE_CONFLICT));
+
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/32/removal"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                                + "\"targetMembershipVersion\":1,"
+                                + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("DINNER_HOUSEHOLD_MEMBER_STATE_CONFLICT"));
+    }
+
+    @Test
+    void removalMapsReusedKeyWithDifferentRequestToOperationConflict() throws Exception {
+        when(householdOperationService.remove(7L, 31L, 7L, 32L, 2L, REMOVAL_KEY))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_OPERATION_CONFLICT));
+
+        mockMvc.perform(authenticated(post("/api/dinner/household/members/32/removal"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                                + "\"targetMembershipVersion\":2,"
+                                + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("DINNER_HOUSEHOLD_OPERATION_CONFLICT"));
+    }
+
+    @Test
     void joinReturnsMemberRoleAndVersionsWithoutInviteOrUserProfileData() throws Exception {
         when(householdService.join(7L, "DINNER 0123 ABYZ"))
                 .thenReturn(household(2, 8L, 5L, "MEMBER", 32L, 1L));
@@ -408,6 +612,15 @@ class DinnerHouseholdControllerTest {
                         .content("{\"name\":\"我们的小家\"}")),
                 Arguments.of(post("/api/dinner/households/invite-code/refresh")),
                 Arguments.of(post("/api/dinner/household/invite-code/revocation")),
+                Arguments.of(post("/api/dinner/household/members/me/leave")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":32,\"expectedVersion\":7,"
+                                + "\"idempotencyKey\":\"" + LEAVE_KEY + "\"}")),
+                Arguments.of(post("/api/dinner/household/members/32/removal")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                                + "\"targetMembershipVersion\":2,"
+                                + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}")),
                 Arguments.of(post("/api/dinner/households/join")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"inviteCode\":\"DINNER 1234\"}")));
@@ -418,6 +631,42 @@ class DinnerHouseholdControllerTest {
                 Arguments.of("{\"name\":\"\",\"expectedVersion\":7}"),
                 Arguments.of("{\"name\":\"我们的小家\",\"expectedVersion\":0}"),
                 Arguments.of("{\"name\":\"我们的小家\"}"));
+    }
+
+    private static Stream<Arguments> invalidLeaveRequests() {
+        return Stream.of(
+                Arguments.of("{\"actorMembershipId\":0,\"expectedVersion\":7,"
+                        + "\"idempotencyKey\":\"" + LEAVE_KEY + "\"}"),
+                Arguments.of("{\"actorMembershipId\":32,\"expectedVersion\":0,"
+                        + "\"idempotencyKey\":\"" + LEAVE_KEY + "\"}"),
+                Arguments.of("{\"expectedVersion\":7,"
+                        + "\"idempotencyKey\":\"" + LEAVE_KEY + "\"}"),
+                Arguments.of("{\"actorMembershipId\":32,"
+                        + "\"idempotencyKey\":\"" + LEAVE_KEY + "\"}"),
+                Arguments.of("{\"actorMembershipId\":32,\"expectedVersion\":7,"
+                        + "\"idempotencyKey\":\"   \"}"),
+                Arguments.of("{\"actorMembershipId\":32,\"expectedVersion\":7,"
+                        + "\"idempotencyKey\":\"00000000-0000-4000-8000-00000000003\"}"));
+    }
+
+    private static Stream<Arguments> invalidRemovalRequests() {
+        return Stream.of(
+                Arguments.of("{\"actorMembershipId\":0,\"expectedVersion\":7,"
+                        + "\"targetMembershipVersion\":2,"
+                        + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"),
+                Arguments.of("{\"actorMembershipId\":31,\"expectedVersion\":0,"
+                        + "\"targetMembershipVersion\":2,"
+                        + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"),
+                Arguments.of("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                        + "\"targetMembershipVersion\":0,"
+                        + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"),
+                Arguments.of("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                        + "\"idempotencyKey\":\"" + REMOVAL_KEY + "\"}"),
+                Arguments.of("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                        + "\"targetMembershipVersion\":2,\"idempotencyKey\":\"\"}"),
+                Arguments.of("{\"actorMembershipId\":31,\"expectedVersion\":7,"
+                        + "\"targetMembershipVersion\":2,"
+                        + "\"idempotencyKey\":\"00000000-0000-4000-8000-0000000000320\"}"));
     }
 
     private HouseholdResponse household(

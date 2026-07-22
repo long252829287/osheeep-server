@@ -33,4 +33,16 @@ public interface DinnerRecipeIngredientMapper extends BaseMapper<DinnerRecipeIng
             """)
     List<DinnerRecipeIngredientRow> selectWithIngredientNames(
             @Param("recipeIds") List<Long> recipeIds);
+
+    @Select({
+        "<script>",
+        "SELECT * FROM dinner_recipe_ingredients WHERE recipe_id IN",
+        "<foreach collection=\"recipeIds\" item=\"recipeId\" open=\"(\" separator=\",\" close=\")\">",
+        "#{recipeId}",
+        "</foreach>",
+        "ORDER BY recipe_id, id FOR UPDATE",
+        "</script>"
+    })
+    List<DinnerRecipeIngredientEntity> selectByRecipeIdsForUpdate(
+            @Param("recipeIds") List<Long> recipeIds);
 }

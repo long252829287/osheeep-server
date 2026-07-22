@@ -2,10 +2,12 @@ package com.osheeep.server.dinner.household.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface DinnerHouseholdMemberMapper extends BaseMapper<DinnerHouseholdMemberEntity> {
@@ -49,4 +51,20 @@ public interface DinnerHouseholdMemberMapper extends BaseMapper<DinnerHouseholdM
     List<DinnerHouseholdMemberEntity> selectHistoryByHouseholdAndUserIds(
             @Param("householdId") Long householdId,
             @Param("userIds") List<Long> userIds);
+
+    @Update("UPDATE dinner_household_members "
+            + "SET status = #{status}, ended_at = #{endedAt}, ended_by = #{endedBy}, "
+            + "end_reason = #{endReason}, version = version + 1 "
+            + "WHERE id = #{membershipId} AND household_id = #{householdId} "
+            + "AND user_id = #{userId} AND role = 'MEMBER' AND status = 'ACTIVE' "
+            + "AND version = #{expectedVersion}")
+    int endActiveMember(
+            @Param("membershipId") Long membershipId,
+            @Param("householdId") Long householdId,
+            @Param("userId") Long userId,
+            @Param("expectedVersion") Long expectedVersion,
+            @Param("status") String status,
+            @Param("endedAt") LocalDateTime endedAt,
+            @Param("endedBy") Long endedBy,
+            @Param("endReason") String endReason);
 }

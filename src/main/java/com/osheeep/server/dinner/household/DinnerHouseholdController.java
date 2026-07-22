@@ -2,18 +2,24 @@ package com.osheeep.server.dinner.household;
 
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.osheeep.server.common.api.ApiResponse;
+import com.osheeep.server.common.error.BusinessException;
+import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.dinner.household.dto.CreateHouseholdRequest;
 import com.osheeep.server.dinner.household.dto.HouseholdCreatedResponse;
 import com.osheeep.server.dinner.household.dto.HouseholdInviteStatusResponse;
 import com.osheeep.server.dinner.household.dto.HouseholdManagementResponse;
+import com.osheeep.server.dinner.household.dto.HouseholdMutationResponse;
 import com.osheeep.server.dinner.household.dto.HouseholdResponse;
 import com.osheeep.server.dinner.household.dto.JoinHouseholdRequest;
+import com.osheeep.server.dinner.household.dto.LeaveHouseholdRequest;
+import com.osheeep.server.dinner.household.dto.RemoveHouseholdMemberRequest;
 import com.osheeep.server.dinner.household.dto.RenameHouseholdRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -26,9 +32,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class DinnerHouseholdController {
 
     private final DinnerHouseholdService householdService;
+    private final DinnerHouseholdOperationService householdOperationService;
 
-    public DinnerHouseholdController(DinnerHouseholdService householdService) {
+    public DinnerHouseholdController(
+            DinnerHouseholdService householdService,
+            DinnerHouseholdOperationService householdOperationService
+    ) {
         this.householdService = householdService;
+        this.householdOperationService = householdOperationService;
     }
 
     @GetMapping("/household")
@@ -83,11 +94,51 @@ public class DinnerHouseholdController {
         return ApiResponse.ok(householdService.revokeInvite(currentUser.id()));
     }
 
+    @PostMapping("/household/members/me/leave")
+    public ApiResponse<HouseholdMutationResponse> leave(
+            @AuthenticationPrincipal CurrentUser currentUser,
+            @Valid @RequestBody LeaveHouseholdRequest request
+    ) {
+        return ApiResponse.ok(householdOperationService.leave(
+                currentUser.id(),
+                request.actorMembershipId(),
+                request.expectedVersion(),
+                request.idempotencyKey()));
+    }
+
+    @PostMapping("/household/members/{membershipId}/removal")
+    public ApiResponse<HouseholdMutationResponse> removeMember(
+            @AuthenticationPrincipal CurrentUser currentUser,
+            @PathVariable String membershipId,
+            @Valid @RequestBody RemoveHouseholdMemberRequest request
+    ) {
+        Long parsedMembershipId = parsePositiveMembershipId(membershipId);
+        return ApiResponse.ok(householdOperationService.remove(
+                currentUser.id(),
+                request.actorMembershipId(),
+                request.expectedVersion(),
+                parsedMembershipId,
+                request.targetMembershipVersion(),
+                request.idempotencyKey()));
+    }
+
     @PostMapping("/households/join")
     public ApiResponse<HouseholdResponse> join(
             @AuthenticationPrincipal CurrentUser currentUser,
             @Valid @RequestBody JoinHouseholdRequest request
     ) {
         return ApiResponse.ok(householdService.join(currentUser.id(), request.inviteCode()));
+    }
+
+    private Long parsePositiveMembershipId(String value) {
+        try {
+            long membershipId = Long.parseLong(value);
+            if (membershipId < 1) {
+                throw new NumberFormatException("Membership id must be positive");
+            }
+            return membershipId;
+        } catch (NumberFormatException exception) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR);
+        }
     }
 }
