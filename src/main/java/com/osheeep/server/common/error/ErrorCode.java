@@ -15,6 +15,25 @@ public enum ErrorCode {
     DINNER_HOUSEHOLD_REQUIRED(HttpStatus.CONFLICT, "An active household is required"),
     DINNER_HOUSEHOLD_VERSION_CONFLICT(
             HttpStatus.CONFLICT, "Household state changed while the request was running"),
+    DINNER_HOUSEHOLD_OWNER_REQUIRED(
+            HttpStatus.FORBIDDEN, "Household owner permission is required"),
+    DINNER_HOUSEHOLD_OWNER_CANNOT_LEAVE(
+            HttpStatus.CONFLICT, "Household owner must transfer ownership or dissolve the household"),
+    DINNER_HOUSEHOLD_MEMBER_NOT_FOUND(
+            HttpStatus.NOT_FOUND, "Household member was not found"),
+    DINNER_HOUSEHOLD_MEMBER_STATE_CONFLICT(
+            HttpStatus.CONFLICT, "Household member state changed while the request was running"),
+    DINNER_HOUSEHOLD_NAME_MISMATCH(
+            HttpStatus.UNPROCESSABLE_ENTITY, "Household name does not match"),
+    DINNER_HOUSEHOLD_NAME_REJECTED(
+            HttpStatus.UNPROCESSABLE_ENTITY, "Household name was rejected"),
+    DINNER_HOUSEHOLD_MODERATION_UNAVAILABLE(
+            HttpStatus.SERVICE_UNAVAILABLE,
+            "Household name moderation is temporarily unavailable"),
+    DINNER_HOUSEHOLD_IDENTITY_MISMATCH(
+            HttpStatus.FORBIDDEN, "WeChat identity does not match current account"),
+    DINNER_HOUSEHOLD_OPERATION_CONFLICT(
+            HttpStatus.CONFLICT, "Household operation key was already used differently"),
     DINNER_MENU_EMPTY(HttpStatus.BAD_REQUEST, "Dinner menu must contain at least one recipe"),
     DINNER_MENU_VERSION_CONFLICT(HttpStatus.CONFLICT, "Dinner menu was updated by another member"),
     DINNER_MENU_NOT_CONFIRMED(HttpStatus.CONFLICT, "Dinner menu must be confirmed before completion"),

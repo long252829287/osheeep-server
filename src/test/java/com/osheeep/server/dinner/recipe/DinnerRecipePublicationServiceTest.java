@@ -11,9 +11,10 @@ import com.osheeep.server.auth.wechat.WechatUserIdentityEntity;
 import com.osheeep.server.auth.wechat.WechatUserIdentityMapper;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
+import com.osheeep.server.dinner.moderation.DinnerTextSafetyGateway;
+import com.osheeep.server.dinner.moderation.DinnerTextSafetyResult;
+import com.osheeep.server.dinner.moderation.DinnerTextSafetyUnavailableException;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
-import com.osheeep.server.dinner.recipe.moderation.RecipeTextSafetyGateway;
-import com.osheeep.server.dinner.recipe.moderation.RecipeTextSafetyResult;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -26,7 +27,7 @@ class DinnerRecipePublicationServiceTest {
 
     @Mock private DinnerRecipePublishSnapshotLoader snapshotLoader;
     @Mock private WechatUserIdentityMapper identityMapper;
-    @Mock private RecipeTextSafetyGateway gateway;
+    @Mock private DinnerTextSafetyGateway gateway;
     @Mock private DinnerRecipePublishTransaction transaction;
 
     @Test
@@ -37,7 +38,7 @@ class DinnerRecipePublicationServiceTest {
         when(snapshotLoader.loadForModeration(7L, 101L, 4L)).thenReturn(snapshot);
         when(identityMapper.selectOne(any())).thenReturn(identity());
         when(gateway.check("openid-7", snapshot.name(), snapshot.moderationText()))
-                .thenReturn(RecipeTextSafetyResult.PASS);
+                .thenReturn(DinnerTextSafetyResult.PASS);
         when(transaction.publishChecked(7L, 101L, 4L)).thenReturn(publishedResponse());
 
         assertThat(service.publish(7L, 101L, 4L).status()).isEqualTo("PUBLISHED");
@@ -55,12 +56,42 @@ class DinnerRecipePublicationServiceTest {
         RecipePublishSnapshot snapshot = completeSnapshot();
         when(snapshotLoader.loadForModeration(7L, 101L, 4L)).thenReturn(snapshot);
         when(identityMapper.selectOne(any())).thenReturn(identity());
-        when(gateway.check(any(), any(), any())).thenReturn(RecipeTextSafetyResult.REJECT);
+        when(gateway.check(any(), any(), any())).thenReturn(DinnerTextSafetyResult.REJECT);
 
         assertThatThrownBy(() -> service.publish(7L, 101L, 4L))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.errorCode())
                                 .isEqualTo(ErrorCode.DINNER_RECIPE_CONTENT_REJECTED));
+        verifyNoInteractions(transaction);
+    }
+
+    @Test
+    void unavailableDinnerTextSafetyKeepsTheExistingRecipeWireError() {
+        DinnerRecipePublicationService service = new DinnerRecipePublicationService(
+                snapshotLoader, identityMapper, gateway, transaction);
+        RecipePublishSnapshot snapshot = completeSnapshot();
+        when(snapshotLoader.loadForModeration(7L, 101L, 4L)).thenReturn(snapshot);
+        when(identityMapper.selectOne(any())).thenReturn(identity());
+        when(gateway.check("openid-7", snapshot.name(), snapshot.moderationText()))
+                .thenThrow(new DinnerTextSafetyUnavailableException());
+
+        assertModerationUnavailable(() -> service.publish(7L, 101L, 4L));
+
+        verifyNoInteractions(transaction);
+    }
+
+    @Test
+    void unexpectedEmptyDinnerTextSafetyResultFailsClosed() {
+        DinnerRecipePublicationService service = new DinnerRecipePublicationService(
+                snapshotLoader, identityMapper, gateway, transaction);
+        RecipePublishSnapshot snapshot = completeSnapshot();
+        when(snapshotLoader.loadForModeration(7L, 101L, 4L)).thenReturn(snapshot);
+        when(identityMapper.selectOne(any())).thenReturn(identity());
+        when(gateway.check("openid-7", snapshot.name(), snapshot.moderationText()))
+                .thenReturn(null);
+
+        assertModerationUnavailable(() -> service.publish(7L, 101L, 4L));
+
         verifyNoInteractions(transaction);
     }
 

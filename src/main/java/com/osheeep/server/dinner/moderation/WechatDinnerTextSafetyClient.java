@@ -1,17 +1,16 @@
-package com.osheeep.server.dinner.recipe.moderation;
+package com.osheeep.server.dinner.moderation;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.osheeep.server.auth.wechat.WechatAccessTokenProvider;
 import com.osheeep.server.common.error.BusinessException;
-import com.osheeep.server.common.error.ErrorCode;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
 @Component
-public class WechatRecipeTextSafetyClient implements RecipeTextSafetyGateway {
+public class WechatDinnerTextSafetyClient implements DinnerTextSafetyGateway {
 
     private static final int INVALID_ACCESS_TOKEN = 40001;
 
@@ -19,7 +18,7 @@ public class WechatRecipeTextSafetyClient implements RecipeTextSafetyGateway {
     private final ObjectMapper objectMapper;
     private final WechatAccessTokenProvider tokenProvider;
 
-    public WechatRecipeTextSafetyClient(
+    public WechatDinnerTextSafetyClient(
             RestClient.Builder builder,
             ObjectMapper objectMapper,
             WechatAccessTokenProvider tokenProvider
@@ -30,12 +29,12 @@ public class WechatRecipeTextSafetyClient implements RecipeTextSafetyGateway {
     }
 
     @Override
-    public RecipeTextSafetyResult check(String openid, String title, String content) {
-        String token = tokenProvider.currentToken();
+    public DinnerTextSafetyResult check(String openid, String title, String content) {
+        String token = currentToken();
         CheckResponse response = requestCheck(token, openid, title, content);
         if (isInvalidToken(response)) {
             tokenProvider.invalidate(token);
-            String refreshedToken = tokenProvider.currentToken();
+            String refreshedToken = currentToken();
             CheckResponse retried = requestCheck(refreshedToken, openid, title, content);
             if (isInvalidToken(retried)) {
                 tokenProvider.invalidate(refreshedToken);
@@ -43,6 +42,14 @@ public class WechatRecipeTextSafetyClient implements RecipeTextSafetyGateway {
             return mapResult(retried);
         }
         return mapResult(response);
+    }
+
+    private String currentToken() {
+        try {
+            return tokenProvider.currentToken();
+        } catch (BusinessException exception) {
+            throw unavailable();
+        }
     }
 
     private CheckResponse requestCheck(
@@ -69,16 +76,16 @@ public class WechatRecipeTextSafetyClient implements RecipeTextSafetyGateway {
         }
     }
 
-    private RecipeTextSafetyResult mapResult(CheckResponse response) {
+    private DinnerTextSafetyResult mapResult(CheckResponse response) {
         if (response == null || response.errcode() == null || response.errcode() != 0) {
             throw unavailable();
         }
         String suggest = response.result() == null ? null : response.result().suggest();
         if ("pass".equals(suggest)) {
-            return RecipeTextSafetyResult.PASS;
+            return DinnerTextSafetyResult.PASS;
         }
         if ("review".equals(suggest) || "risky".equals(suggest)) {
-            return RecipeTextSafetyResult.REJECT;
+            return DinnerTextSafetyResult.REJECT;
         }
         throw unavailable();
     }
@@ -87,8 +94,8 @@ public class WechatRecipeTextSafetyClient implements RecipeTextSafetyGateway {
         return response != null && Integer.valueOf(INVALID_ACCESS_TOKEN).equals(response.errcode());
     }
 
-    private BusinessException unavailable() {
-        return new BusinessException(ErrorCode.DINNER_RECIPE_MODERATION_UNAVAILABLE);
+    private DinnerTextSafetyUnavailableException unavailable() {
+        return new DinnerTextSafetyUnavailableException();
     }
 
     private record CheckRequest(

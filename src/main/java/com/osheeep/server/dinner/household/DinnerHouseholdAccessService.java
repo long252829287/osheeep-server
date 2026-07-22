@@ -67,12 +67,12 @@ public class DinnerHouseholdAccessService {
     }
 
     public DinnerHouseholdEntity findActiveHousehold(Long userId) {
-        ActiveContext context = findActiveContext(userId);
+        ActiveHouseholdSnapshot context = findActiveSnapshot(userId);
         return context == null ? null : context.household();
     }
 
     public ActiveHouseholdAccess requireActiveHousehold(Long userId) {
-        ActiveContext context = findActiveContext(userId);
+        ActiveHouseholdSnapshot context = findActiveSnapshot(userId);
         if (context == null) {
             throw new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED);
         }
@@ -147,7 +147,7 @@ public class DinnerHouseholdAccessService {
         return context;
     }
 
-    private ActiveContext findActiveContext(Long userId) {
+    ActiveHouseholdSnapshot findActiveSnapshot(Long userId) {
         DinnerHouseholdMemberEntity membership = findActiveMembership(userId);
         if (!isCompleteActiveMembership(membership)) {
             return null;
@@ -156,7 +156,7 @@ public class DinnerHouseholdAccessService {
         if (!isCompleteActiveHousehold(household, membership.getHouseholdId())) {
             return null;
         }
-        return new ActiveContext(membership, household);
+        return new ActiveHouseholdSnapshot(membership, household);
     }
 
     private boolean isCompleteActiveMembership(DinnerHouseholdMemberEntity membership) {
@@ -282,7 +282,7 @@ public class DinnerHouseholdAccessService {
         return new BusinessException(ErrorCode.DINNER_HOUSEHOLD_VERSION_CONFLICT);
     }
 
-    private record ActiveContext(
+    record ActiveHouseholdSnapshot(
             DinnerHouseholdMemberEntity membership,
             DinnerHouseholdEntity household
     ) {}

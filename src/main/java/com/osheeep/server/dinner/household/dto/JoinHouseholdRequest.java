@@ -8,4 +8,9 @@ public record JoinHouseholdRequest(
         @Size(max = 32)
         String inviteCode
 ) {
+
+    @Override
+    public String toString() {
+        return "JoinHouseholdRequest[redacted]";
+    }
 }

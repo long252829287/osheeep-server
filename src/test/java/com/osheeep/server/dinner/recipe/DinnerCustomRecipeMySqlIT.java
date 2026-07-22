@@ -28,8 +28,8 @@ import com.osheeep.server.dinner.recipe.dto.ReplaceRecipeIngredientsRequest;
 import com.osheeep.server.dinner.recipe.dto.SelectRecipeImageRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateDefaultMethodRequest;
 import com.osheeep.server.dinner.recipe.dto.UpdateRecipeBasicInfoRequest;
-import com.osheeep.server.dinner.recipe.moderation.RecipeTextSafetyGateway;
-import com.osheeep.server.dinner.recipe.moderation.RecipeTextSafetyResult;
+import com.osheeep.server.dinner.moderation.DinnerTextSafetyGateway;
+import com.osheeep.server.dinner.moderation.DinnerTextSafetyResult;
 import com.osheeep.server.dinner.record.entity.DinnerRecordDishSnapshotEntity;
 import com.osheeep.server.dinner.record.mapper.DinnerRecordDishSnapshotMapper;
 import java.math.BigDecimal;
@@ -80,7 +80,7 @@ public class DinnerCustomRecipeMySqlIT {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private JwtService jwtService;
-    @MockitoBean private RecipeTextSafetyGateway textSafetyGateway;
+    @MockitoBean private DinnerTextSafetyGateway textSafetyGateway;
     @MockitoSpyBean private DinnerRecordDishSnapshotMapper snapshotMapper;
 
     private Long firstUserId;
@@ -181,7 +181,7 @@ public class DinnerCustomRecipeMySqlIT {
         householdIngredientId = insertHouseholdIngredient(householdIngredientName);
 
         when(textSafetyGateway.check(anyString(), anyString(), anyString()))
-                .thenReturn(RecipeTextSafetyResult.PASS);
+                .thenReturn(DinnerTextSafetyResult.PASS);
     }
 
     @AfterEach

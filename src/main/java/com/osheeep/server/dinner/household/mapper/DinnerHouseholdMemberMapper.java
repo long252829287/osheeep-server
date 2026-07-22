@@ -21,6 +21,12 @@ public interface DinnerHouseholdMemberMapper extends BaseMapper<DinnerHouseholdM
 
     @Select("SELECT * FROM dinner_household_members "
             + "WHERE household_id = #{householdId} AND status = 'ACTIVE' "
+            + "ORDER BY id")
+    List<DinnerHouseholdMemberEntity> selectActiveByHouseholdId(
+            @Param("householdId") Long householdId);
+
+    @Select("SELECT * FROM dinner_household_members "
+            + "WHERE household_id = #{householdId} AND status = 'ACTIVE' "
             + "ORDER BY id FOR UPDATE")
     List<DinnerHouseholdMemberEntity> selectActiveByHouseholdIdForUpdate(
             @Param("householdId") Long householdId);

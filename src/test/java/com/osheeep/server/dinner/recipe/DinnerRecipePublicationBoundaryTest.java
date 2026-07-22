@@ -13,6 +13,8 @@ import com.osheeep.server.auth.wechat.WechatUserIdentityMapper;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.dinner.image.DinnerImageAssetService;
+import com.osheeep.server.dinner.moderation.DinnerTextSafetyGateway;
+import com.osheeep.server.dinner.moderation.DinnerTextSafetyResult;
 import com.osheeep.server.dinner.recipe.DinnerRecipeAuthorizer.RecipeAccess;
 import com.osheeep.server.dinner.recipe.dto.RecipeDraftResponse;
 import com.osheeep.server.dinner.recipe.dto.RecipeIngredientResponse;
@@ -21,8 +23,6 @@ import com.osheeep.server.dinner.recipe.dto.RecipeMethodStepResponse;
 import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
 import com.osheeep.server.dinner.recipe.moderation.RecipeModerationTextBuilder;
-import com.osheeep.server.dinner.recipe.moderation.RecipeTextSafetyGateway;
-import com.osheeep.server.dinner.recipe.moderation.RecipeTextSafetyResult;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -51,7 +51,7 @@ class DinnerRecipePublicationBoundaryTest {
     @Autowired private DinnerRecipeQueryService queryService;
     @Autowired private DinnerImageAssetService imageAssetService;
     @Autowired private WechatUserIdentityMapper identityMapper;
-    @Autowired private RecipeTextSafetyGateway gateway;
+    @Autowired private DinnerTextSafetyGateway gateway;
 
     @BeforeEach
     void resetCollaborators() {
@@ -65,7 +65,7 @@ class DinnerRecipePublicationBoundaryTest {
         prepareValidPublish();
         when(gateway.check(any(), any(), any())).thenAnswer(invocation -> {
             assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
-            return RecipeTextSafetyResult.PASS;
+            return DinnerTextSafetyResult.PASS;
         });
         when(recipeMapper.selectByIdForUpdate(101L)).thenAnswer(invocation -> {
             assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
@@ -100,7 +100,7 @@ class DinnerRecipePublicationBoundaryTest {
         prepareValidPublish();
         when(gateway.check(any(), any(), any())).thenAnswer(invocation -> {
             assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
-            return RecipeTextSafetyResult.PASS;
+            return DinnerTextSafetyResult.PASS;
         });
         when(recipeMapper.selectByIdForUpdate(101L)).thenReturn(draft());
         when(authorizer.requireMembershipForUpdate(7L)).thenReturn(new RecipeAccess(7L, 70L));
@@ -121,7 +121,7 @@ class DinnerRecipePublicationBoundaryTest {
         prepareValidPublish();
         when(gateway.check(any(), any(), any())).thenAnswer(invocation -> {
             assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
-            return RecipeTextSafetyResult.PASS;
+            return DinnerTextSafetyResult.PASS;
         });
         when(recipeMapper.selectByIdForUpdate(101L)).thenAnswer(invocation -> {
             assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
@@ -182,7 +182,7 @@ class DinnerRecipePublicationBoundaryTest {
         @Bean DinnerRecipePublicationService publicationService(
                 DinnerRecipePublishSnapshotLoader loader,
                 WechatUserIdentityMapper identityMapper,
-                RecipeTextSafetyGateway gateway,
+                DinnerTextSafetyGateway gateway,
                 DinnerRecipePublishTransaction transaction
         ) {
             return new DinnerRecipePublicationService(loader, identityMapper, gateway, transaction);
@@ -223,7 +223,9 @@ class DinnerRecipePublicationBoundaryTest {
         @Bean DinnerRecipeQueryService queryService() { return org.mockito.Mockito.mock(DinnerRecipeQueryService.class); }
         @Bean DinnerImageAssetService imageAssetService() { return org.mockito.Mockito.mock(DinnerImageAssetService.class); }
         @Bean WechatUserIdentityMapper identityMapper() { return org.mockito.Mockito.mock(WechatUserIdentityMapper.class); }
-        @Bean RecipeTextSafetyGateway gateway() { return org.mockito.Mockito.mock(RecipeTextSafetyGateway.class); }
+        @Bean DinnerTextSafetyGateway gateway() {
+            return org.mockito.Mockito.mock(DinnerTextSafetyGateway.class);
+        }
     }
 
     static class RecordingTransactionManager extends AbstractPlatformTransactionManager {
