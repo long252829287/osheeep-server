@@ -9,13 +9,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
 import com.osheeep.server.dinner.menu.BusinessDateResolver;
 import com.osheeep.server.dinner.menu.DinnerMenuService;
 import com.osheeep.server.dinner.menu.dto.TodayMenuResponse;
@@ -36,12 +37,15 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -55,8 +59,7 @@ import org.springframework.dao.DuplicateKeyException;
 @ExtendWith(MockitoExtension.class)
 class DinnerRecordServiceTest {
 
-    @Mock private DinnerHouseholdMapper householdMapper;
-    @Mock private DinnerHouseholdMemberMapper memberMapper;
+    @Mock private DinnerHouseholdAccessService householdAccessService;
     @Mock private DinnerMenuMapper menuMapper;
     @Mock private DinnerMenuSelectionMapper selectionMapper;
     @Mock private DinnerMenuActionMapper actionMapper;
@@ -70,9 +73,12 @@ class DinnerRecordServiceTest {
 
     @BeforeEach
     void setUp() {
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), "test"),
+                DinnerCookingRecordEntity.class);
         Clock clock = Clock.fixed(Instant.parse("2026-07-11T11:00:00Z"), ZoneOffset.UTC);
         service = new DinnerRecordService(
-                householdMapper, memberMapper, menuMapper, selectionMapper, actionMapper,
+                householdAccessService, menuMapper, selectionMapper, actionMapper,
                 recordMapper, snapshotMapper, menuService, snapshotAssembler,
                 new DinnerRecordSnapshotJsonCodec(new ObjectMapper()),
                 new BusinessDateResolver(), clock);
@@ -90,6 +96,76 @@ class DinnerRecordServiceTest {
         verify(recordMapper, never()).insert(any(DinnerCookingRecordEntity.class));
         verify(snapshotMapper, never()).insert(any(DinnerRecordDishSnapshotEntity.class));
         verifyNoInteractions(snapshotAssembler);
+    }
+
+    @Test
+    void completeRejectsACompletedMenuBeforeTheMembershipVisibilityWindow() {
+        LocalDateTime visibleFrom = LocalDateTime.of(2026, 7, 11, 10, 30);
+        DinnerMenuEntity menu = menu("COMPLETED", 6L);
+        menu.setCompletedAt(visibleFrom.minusNanos(1));
+        stubContext(menu, access(visibleFrom));
+
+        assertThatThrownBy(() -> service.complete(
+                7L, 6L, "00000000-0000-4000-8000-000000000091"))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+
+        verifyNoInteractions(
+                recordMapper, selectionMapper, actionMapper, snapshotMapper,
+                menuService, snapshotAssembler);
+    }
+
+    @Test
+    void completeFailsClosedWhenACompletedMenuHasNoCompletionTime() {
+        DinnerMenuEntity menu = menu("COMPLETED", 6L);
+        menu.setCompletedAt(null);
+        stubContext(menu, access(LocalDateTime.of(2026, 7, 11, 10, 30)));
+
+        assertThatThrownBy(() -> service.complete(
+                7L, 6L, "00000000-0000-4000-8000-000000000092"))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+
+        verifyNoInteractions(
+                recordMapper, selectionMapper, actionMapper, snapshotMapper,
+                menuService, snapshotAssembler);
+    }
+
+    @Test
+    void completeRejectsANewRecordBeforeAFutureMembershipVisibilityWindow() {
+        DinnerMenuEntity menu = menu("CONFIRMED", 5L);
+        stubContext(menu, access(LocalDateTime.of(2026, 7, 11, 12, 0)));
+        when(recordMapper.selectOne(any())).thenReturn(null);
+        when(selectionMapper.selectList(any())).thenReturn(List.of());
+        when(snapshotAssembler.assemble(11L, List.of())).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.complete(
+                7L, 5L, "00000000-0000-4000-8000-000000000094"))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+
+        verify(recordMapper, never()).insert(any(DinnerCookingRecordEntity.class));
+        verify(menuMapper, never()).updateById(any(DinnerMenuEntity.class));
+        verify(actionMapper, never()).insert(any(DinnerMenuActionEntity.class));
+        verifyNoInteractions(snapshotMapper, menuService);
+    }
+
+    @Test
+    void repeatedCompleteAtTheExactVisibilityBoundaryReturnsTheExistingRecord() {
+        LocalDateTime visibleFrom = LocalDateTime.of(2026, 7, 11, 10, 30);
+        DinnerMenuEntity menu = menu("COMPLETED", 6L);
+        menu.setCompletedAt(visibleFrom);
+        DinnerCookingRecordEntity existing = record(91L, 31L);
+        existing.setCompletedAt(visibleFrom);
+        stubContext(menu, access(visibleFrom));
+        when(recordMapper.selectOne(any())).thenReturn(existing);
+        when(menuService.today(7L)).thenReturn(today(91L));
+
+        var result = service.complete(
+                7L, 0L, "00000000-0000-4000-8000-000000000093");
+
+        assertThat(result.recordId()).isEqualTo(91L);
+        verify(recordMapper, never()).insert(any(DinnerCookingRecordEntity.class));
     }
 
     @Test
@@ -234,9 +310,54 @@ class DinnerRecordServiceTest {
         verify(menuMapper, never()).updateById(any(DinnerMenuEntity.class));
     }
 
+    @ParameterizedTest(name = "{0} membership cannot list its former household records")
+    @MethodSource("inactiveMembershipStatuses")
+    void listRejectsInactiveMembership(String membershipStatus) {
+        when(householdAccessService.requireActiveHousehold(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.list(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThat(membershipStatus).isIn("LEFT", "REMOVED");
+        verifyNoInteractions(recordMapper, snapshotMapper);
+    }
+
+    @ParameterizedTest(name = "{0} membership cannot deep-link its former household record")
+    @MethodSource("inactiveMembershipStatuses")
+    void detailRejectsInactiveMembership(String membershipStatus) {
+        when(householdAccessService.requireActiveHousehold(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.detail(7L, 91L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThat(membershipStatus).isIn("LEFT", "REMOVED");
+        verifyNoInteractions(recordMapper, snapshotMapper);
+    }
+
+    @ParameterizedTest(name = "ACTIVE membership rejects {0} household records")
+    @MethodSource("unavailableHouseholds")
+    void listRejectsActiveMembershipWithoutActiveHousehold(String reason) {
+        when(householdAccessService.requireActiveHousehold(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.list(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThat(reason).isNotBlank();
+        verifyNoInteractions(recordMapper, snapshotMapper);
+    }
+
     @Test
     void listsRecordsForTheCurrentHousehold() {
-        when(memberMapper.selectOne(any())).thenReturn(member());
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
         DinnerCookingRecordEntity record = record(91L, 31L);
         record.setHouseholdId(11L);
         record.setRecordDate(LocalDate.of(2026, 7, 11));
@@ -253,8 +374,86 @@ class DinnerRecordServiceTest {
     }
 
     @Test
+    void listStartsAtCurrentMembershipHistoryVisibilityWindow() {
+        LocalDateTime visibleFrom = LocalDateTime.of(2026, 7, 11, 10, 30);
+        DinnerCookingRecordEntity hidden = record(90L, 30L);
+        hidden.setHouseholdId(11L);
+        hidden.setRecordDate(LocalDate.of(2026, 7, 11));
+        hidden.setCompletedBy(8L);
+        hidden.setCompletedAt(visibleFrom.minusMinutes(1));
+        DinnerCookingRecordEntity visible = record(91L, 31L);
+        visible.setHouseholdId(11L);
+        visible.setRecordDate(LocalDate.of(2026, 7, 11));
+        visible.setCompletedBy(7L);
+        visible.setCompletedAt(visibleFrom);
+        when(householdAccessService.requireActiveHousehold(7L))
+                .thenReturn(access(visibleFrom));
+        when(recordMapper.selectList(any())).thenAnswer(invocation -> {
+            Wrapper<?> query = invocation.getArgument(0);
+            String sql = query.getSqlSegment().toLowerCase(Locale.ROOT);
+            return sql.contains("completed_at") && sql.contains(">=")
+                    ? List.of(visible)
+                    : List.of(hidden, visible);
+        });
+        when(snapshotMapper.selectCount(any())).thenReturn(1L);
+
+        var result = service.list(7L);
+
+        assertThat(result).extracting(item -> item.id()).containsExactly(91L);
+    }
+
+    @Test
+    void detailDeepLinkRejectsRecordBeforeCurrentMembershipVisibilityWindow() {
+        LocalDateTime visibleFrom = LocalDateTime.of(2026, 7, 11, 10, 30);
+        DinnerCookingRecordEntity record = record(91L, 31L);
+        record.setHouseholdId(11L);
+        record.setRecordDate(LocalDate.of(2026, 7, 11));
+        record.setCompletedBy(8L);
+        record.setCompletedAt(visibleFrom.minusNanos(1));
+        when(householdAccessService.requireActiveHousehold(7L))
+                .thenReturn(access(visibleFrom));
+        when(recordMapper.selectById(91L)).thenReturn(record);
+
+        assertThatThrownBy(() -> service.detail(7L, 91L))
+                .isInstanceOf(BusinessException.class);
+
+        verifyNoInteractions(snapshotMapper);
+    }
+
+    @Test
+    void detailAllowsRecordAtTheExactMembershipVisibilityBoundary() {
+        LocalDateTime visibleFrom = LocalDateTime.of(2026, 7, 11, 10, 30);
+        DinnerCookingRecordEntity record = record(91L, 31L);
+        record.setCompletedAt(visibleFrom);
+        when(householdAccessService.requireActiveHousehold(7L))
+                .thenReturn(access(visibleFrom));
+        when(recordMapper.selectById(91L)).thenReturn(record);
+        when(snapshotMapper.selectList(any())).thenReturn(List.of());
+
+        var result = service.detail(7L, 91L);
+
+        assertThat(result.id()).isEqualTo(91L);
+        assertThat(result.completedAt())
+                .isEqualTo(visibleFrom.toInstant(ZoneOffset.UTC));
+    }
+
+    @Test
+    void detailFailsClosedWhenRecordCompletionTimeIsMissing() {
+        DinnerCookingRecordEntity record = record(91L, 31L);
+        record.setCompletedAt(null);
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
+        when(recordMapper.selectById(91L)).thenReturn(record);
+
+        assertThatThrownBy(() -> service.detail(7L, 91L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+
+        verifyNoInteractions(snapshotMapper);
+    }
+
+    @Test
     void legacyRecordDetailNormalizesNewFieldsWithoutCurrentRecipeLookup() {
-        when(memberMapper.selectOne(any())).thenReturn(member());
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
         DinnerCookingRecordEntity record = record(91L, 31L);
         record.setHouseholdId(11L);
         record.setRecordDate(LocalDate.of(2026, 7, 11));
@@ -287,7 +486,7 @@ class DinnerRecordServiceTest {
 
     @Test
     void householdRecordDetailReadsMethodAndIngredientsOnlyFromStoredSnapshot() {
-        when(memberMapper.selectOne(any())).thenReturn(member());
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
         DinnerCookingRecordEntity record = record(91L, 31L);
         record.setHouseholdId(11L);
         when(recordMapper.selectById(91L)).thenReturn(record);
@@ -379,6 +578,14 @@ class DinnerRecordServiceTest {
                 .hasMessage("Invalid dinner record snapshot JSON");
     }
 
+    private static Stream<String> inactiveMembershipStatuses() {
+        return Stream.of("LEFT", "REMOVED");
+    }
+
+    private static Stream<String> unavailableHouseholds() {
+        return Stream.of("missing", "inactive");
+    }
+
     private static Stream<SnapshotCase> incompleteHouseholdSnapshots() {
         return Stream.of(
                 new SnapshotCase("missing recipe version",
@@ -457,25 +664,23 @@ class DinnerRecordServiceTest {
     }
 
     private void stubContext(DinnerMenuEntity menu) {
-        when(memberMapper.selectOne(any())).thenReturn(member());
-        when(householdMapper.selectById(11L)).thenReturn(household());
+        stubContext(menu, access());
+    }
+
+    private void stubContext(DinnerMenuEntity menu, ActiveHouseholdAccess access) {
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access);
         when(menuMapper.selectByHouseholdAndDateForUpdate(11L, LocalDate.of(2026, 7, 11)))
                 .thenReturn(menu);
     }
 
-    private DinnerHouseholdMemberEntity member() {
-        DinnerHouseholdMemberEntity member = new DinnerHouseholdMemberEntity();
-        member.setHouseholdId(11L);
-        member.setUserId(7L);
-        return member;
+    private ActiveHouseholdAccess access() {
+        return access(LocalDateTime.of(1970, 1, 1, 0, 0));
     }
 
-    private DinnerHouseholdEntity household() {
-        DinnerHouseholdEntity household = new DinnerHouseholdEntity();
-        household.setId(11L);
-        household.setTimezone("Asia/Shanghai");
-        household.setStatus("ACTIVE");
-        return household;
+    private ActiveHouseholdAccess access(LocalDateTime historyVisibleFrom) {
+        return new ActiveHouseholdAccess(
+                7L, 11L, 41L, 4L, "OWNER", historyVisibleFrom,
+                8L, "Asia/Shanghai");
     }
 
     private DinnerMenuEntity menu(String status, Long version) {
@@ -491,7 +696,11 @@ class DinnerRecordServiceTest {
     private DinnerCookingRecordEntity record(Long id, Long menuId) {
         DinnerCookingRecordEntity record = new DinnerCookingRecordEntity();
         record.setId(id);
+        record.setHouseholdId(11L);
         record.setMenuId(menuId);
+        record.setRecordDate(LocalDate.of(2026, 7, 11));
+        record.setCompletedBy(7L);
+        record.setCompletedAt(LocalDateTime.of(2026, 7, 11, 10, 0));
         return record;
     }
 
@@ -587,9 +796,8 @@ class DinnerRecordServiceTest {
     }
 
     private void stubDetail(DinnerRecordDishSnapshotEntity snapshot) {
-        when(memberMapper.selectOne(any())).thenReturn(member());
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
         DinnerCookingRecordEntity record = record(91L, 31L);
-        record.setHouseholdId(11L);
         when(recordMapper.selectById(91L)).thenReturn(record);
         when(snapshotMapper.selectList(any())).thenReturn(List.of(snapshot));
     }

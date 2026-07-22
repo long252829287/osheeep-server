@@ -43,6 +43,7 @@ import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodMapper;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMethodStepMapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -79,7 +80,7 @@ class DinnerRecipeDraftServiceTest {
 
     @Test
     void createsVersionOneDraftForTheCurrentHouseholdAndOwner() {
-        when(memberMapper.selectOne(any())).thenReturn(member(7L, 70L));
+        when(memberMapper.selectActiveByUserId(7L)).thenReturn(member(7L, 70L));
         when(householdMapper.selectById(70L)).thenReturn(household(70L, "ACTIVE"));
         when(recipeMapper.insert(any(DinnerRecipeEntity.class))).thenAnswer(invocation -> {
             DinnerRecipeEntity row = invocation.getArgument(0);
@@ -108,19 +109,20 @@ class DinnerRecipeDraftServiceTest {
 
     @Test
     void rejectsDraftCreationWhenTheCurrentHouseholdIsNotActive() {
-        when(memberMapper.selectOne(any())).thenReturn(member(7L, 70L));
+        when(memberMapper.selectActiveByUserId(7L)).thenReturn(member(7L, 70L));
         when(householdMapper.selectById(70L)).thenReturn(household(70L, "ARCHIVED"));
 
         assertThatThrownBy(() -> service.create(7L))
                 .isInstanceOfSatisfying(BusinessException.class,
-                        error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+                        error -> assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
 
         verify(recipeMapper, never()).insert(any(DinnerRecipeEntity.class));
     }
 
     @Test
     void ownedDraftAuthorizationRejectsARecipeThatIsNotTheCurrentUsersDraft() {
-        when(memberMapper.selectOne(any())).thenReturn(member(7L, 70L));
+        when(memberMapper.selectActiveByUserId(7L)).thenReturn(member(7L, 70L));
         when(householdMapper.selectById(70L)).thenReturn(household(70L, "ACTIVE"));
         DinnerRecipeEntity published = recipe(101L, 7L, "PUBLISHED");
         when(recipeMapper.selectById(101L)).thenReturn(published);
@@ -132,7 +134,7 @@ class DinnerRecipeDraftServiceTest {
 
     @Test
     void ownedDraftAuthorizationReturnsTheCurrentUsersDraft() {
-        when(memberMapper.selectOne(any())).thenReturn(member(7L, 70L));
+        when(memberMapper.selectActiveByUserId(7L)).thenReturn(member(7L, 70L));
         when(householdMapper.selectById(70L)).thenReturn(household(70L, "ACTIVE"));
         DinnerRecipeEntity draft = recipe(101L, 7L, "DRAFT");
         when(recipeMapper.selectById(101L)).thenReturn(draft);
@@ -142,7 +144,7 @@ class DinnerRecipeDraftServiceTest {
 
     @Test
     void ownedDraftAuthorizationRejectsTheOwnersDraftFromAnotherHousehold() {
-        when(memberMapper.selectOne(any())).thenReturn(member(7L, 70L));
+        when(memberMapper.selectActiveByUserId(7L)).thenReturn(member(7L, 70L));
         when(householdMapper.selectById(70L)).thenReturn(household(70L, "ACTIVE"));
         DinnerRecipeEntity oldHouseholdDraft = recipe(101L, 7L, "DRAFT");
         oldHouseholdDraft.setHouseholdId(71L);
@@ -155,7 +157,7 @@ class DinnerRecipeDraftServiceTest {
 
     @Test
     void draftVisibilityRejectsTheOwnersDraftFromAnotherHousehold() {
-        when(memberMapper.selectOne(any())).thenReturn(member(7L, 70L));
+        when(memberMapper.selectActiveByUserId(7L)).thenReturn(member(7L, 70L));
         when(householdMapper.selectById(70L)).thenReturn(household(70L, "ACTIVE"));
         DinnerRecipeEntity oldHouseholdDraft = recipe(101L, 7L, "DRAFT");
         oldHouseholdDraft.setHouseholdId(71L);
@@ -503,6 +505,10 @@ class DinnerRecipeDraftServiceTest {
         member.setId(11L);
         member.setUserId(userId);
         member.setHouseholdId(householdId);
+        member.setRole("OWNER");
+        member.setStatus("ACTIVE");
+        member.setHistoryVisibleFrom(LocalDateTime.of(1970, 1, 1, 0, 0));
+        member.setVersion(1L);
         return member;
     }
 
@@ -510,6 +516,8 @@ class DinnerRecipeDraftServiceTest {
         DinnerHouseholdEntity household = new DinnerHouseholdEntity();
         household.setId(id);
         household.setStatus(status);
+        household.setTimezone("Asia/Shanghai");
+        household.setVersion(1L);
         return household;
     }
 

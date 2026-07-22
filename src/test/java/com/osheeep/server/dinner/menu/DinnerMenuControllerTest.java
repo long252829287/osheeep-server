@@ -10,6 +10,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.osheeep.server.TestUserMapperConfig;
+import com.osheeep.server.common.error.BusinessException;
+import com.osheeep.server.common.error.ErrorCode;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.common.security.JwtService;
 import com.osheeep.server.dinner.menu.dto.TodayMenuResponse;
@@ -93,6 +95,32 @@ class DinnerMenuControllerTest {
                 .andExpect(jsonPath("$.data.dishes[0].recipeVersion").value(8))
                 .andExpect(jsonPath("$.data.dishes[0].method.name").value("家常做法"))
                 .andExpect(jsonPath("$.data.dishes[0].method.steps").doesNotExist());
+    }
+
+    @Test
+    void todayMapsMissingActiveHouseholdToConflict() throws Exception {
+        when(menuService.today(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        mockMvc.perform(authenticated(get("/api/dinner/menus/today")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DINNER_HOUSEHOLD_REQUIRED"));
+    }
+
+    @Test
+    void todaySerializesThePreMembershipMaskWithoutIdentifiers() throws Exception {
+        when(menuService.today(7L)).thenReturn(
+                TodayMenuResponse.preMembership(LocalDate.of(2026, 7, 11)));
+
+        mockMvc.perform(authenticated(get("/api/dinner/menus/today")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.menuDate").value("2026-07-11"))
+                .andExpect(jsonPath("$.data.status").value("PRE_MEMBERSHIP"))
+                .andExpect(jsonPath("$.data.historyVisible").value(false))
+                .andExpect(jsonPath("$.data.id").doesNotExist())
+                .andExpect(jsonPath("$.data.recordId").doesNotExist())
+                .andExpect(jsonPath("$.data.selectedRecipeIds").doesNotExist())
+                .andExpect(jsonPath("$.data.dishes").doesNotExist());
     }
 
     @Test

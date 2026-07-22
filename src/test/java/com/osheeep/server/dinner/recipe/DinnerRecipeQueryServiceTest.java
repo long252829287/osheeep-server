@@ -3,6 +3,7 @@ package com.osheeep.server.dinner.recipe;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -48,6 +49,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -260,6 +262,71 @@ class DinnerRecipeQueryServiceTest {
                         error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
     }
 
+    @ParameterizedTest(name = "{0} member cannot list family recipes from the old household")
+    @ValueSource(strings = {"LEFT", "REMOVED"})
+    void formerMemberCannotListOldHouseholdRecipes(String membershipStatus) {
+        when(memberMapper.selectActiveByUserId(7L))
+                .thenReturn(member(7L, 70L, membershipStatus));
+        lenient().when(householdMapper.selectById(70L))
+                .thenReturn(household(70L, "ACTIVE"));
+
+        assertThatThrownBy(() -> queryService.list(7L, FamilyRecipeTab.PUBLISHED))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode().name())
+                                .isEqualTo("DINNER_HOUSEHOLD_REQUIRED"));
+
+        verifyNoInteractions(
+                ingredientMapper, methodMapper, stepMapper, imageAssetService, userMapper);
+    }
+
+    @ParameterizedTest(name = "{0} member cannot read family recipe detail from the old household")
+    @ValueSource(strings = {"LEFT", "REMOVED"})
+    void formerMemberCannotReadOldHouseholdRecipeDetail(String membershipStatus) {
+        when(memberMapper.selectActiveByUserId(7L))
+                .thenReturn(member(7L, 70L, membershipStatus));
+        lenient().when(householdMapper.selectById(70L))
+                .thenReturn(household(70L, "ACTIVE"));
+        DinnerRecipeEntity recipe = completeBasics(draft(101L, 7L));
+        recipe.setStatus("PUBLISHED");
+        lenient().when(recipeMapper.selectById(101L)).thenReturn(recipe);
+
+        assertThatThrownBy(() -> queryService.detail(7L, 101L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode().name())
+                                .isEqualTo("DINNER_HOUSEHOLD_REQUIRED"));
+
+        verifyNoInteractions(ingredientMapper, methodMapper, stepMapper, imageAssetService);
+    }
+
+    @ParameterizedTest(name = "ACTIVE member cannot list family recipes when household is {0}")
+    @ValueSource(strings = {"MISSING", "DISSOLVED"})
+    void activeMemberCannotListRecipesWithoutActiveHousehold(String householdStatus) {
+        stubMembershipWithHouseholdStatus(7L, 70L, householdStatus);
+
+        assertThatThrownBy(() -> queryService.list(7L, FamilyRecipeTab.PUBLISHED))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode().name())
+                                .isEqualTo("DINNER_HOUSEHOLD_REQUIRED"));
+
+        verifyNoInteractions(
+                recipeMapper, ingredientMapper, methodMapper, stepMapper,
+                imageAssetService, userMapper);
+    }
+
+    @ParameterizedTest(name = "ACTIVE member cannot read recipe detail when household is {0}")
+    @ValueSource(strings = {"MISSING", "DISSOLVED"})
+    void activeMemberCannotReadRecipeDetailWithoutActiveHousehold(String householdStatus) {
+        stubMembershipWithHouseholdStatus(7L, 70L, householdStatus);
+
+        assertThatThrownBy(() -> queryService.detail(7L, 101L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode().name())
+                                .isEqualTo("DINNER_HOUSEHOLD_REQUIRED"));
+
+        verifyNoInteractions(
+                recipeMapper, ingredientMapper, methodMapper, stepMapper, imageAssetService);
+    }
+
     @Test
     void detailBatchesTheAggregateAndConvertsShanghaiDateTimeToInstant() {
         stubActiveMembership(7L, 70L);
@@ -341,8 +408,21 @@ class DinnerRecipeQueryServiceTest {
     }
 
     private void stubActiveMembership(Long userId, Long householdId) {
-        when(memberMapper.selectOne(any())).thenReturn(member(userId, householdId));
+        when(memberMapper.selectActiveByUserId(userId)).thenReturn(member(userId, householdId));
         when(householdMapper.selectById(householdId)).thenReturn(household(householdId, "ACTIVE"));
+    }
+
+    private void stubMembershipWithHouseholdStatus(
+            Long userId,
+            Long householdId,
+            String householdStatus
+    ) {
+        when(memberMapper.selectActiveByUserId(userId))
+                .thenReturn(member(userId, householdId, "ACTIVE"));
+        if (!"MISSING".equals(householdStatus)) {
+            when(householdMapper.selectById(householdId))
+                    .thenReturn(household(householdId, householdStatus));
+        }
     }
 
     private DinnerRecipeEntity draft(Long id, Long creatorId) {
@@ -413,10 +493,22 @@ class DinnerRecipeQueryServiceTest {
     }
 
     private DinnerHouseholdMemberEntity member(Long userId, Long householdId) {
+        return member(userId, householdId, "ACTIVE");
+    }
+
+    private DinnerHouseholdMemberEntity member(
+            Long userId,
+            Long householdId,
+            String status
+    ) {
         DinnerHouseholdMemberEntity member = new DinnerHouseholdMemberEntity();
         member.setId(11L);
         member.setUserId(userId);
         member.setHouseholdId(householdId);
+        member.setStatus(status);
+        member.setRole("MEMBER");
+        member.setVersion(1L);
+        member.setHistoryVisibleFrom(LocalDateTime.of(2026, 7, 1, 0, 0));
         return member;
     }
 
@@ -424,6 +516,8 @@ class DinnerRecipeQueryServiceTest {
         DinnerHouseholdEntity household = new DinnerHouseholdEntity();
         household.setId(id);
         household.setStatus(status);
+        household.setVersion(1L);
+        household.setTimezone("Asia/Shanghai");
         return household;
     }
 

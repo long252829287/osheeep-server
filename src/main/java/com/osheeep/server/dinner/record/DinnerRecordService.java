@@ -3,10 +3,8 @@ package com.osheeep.server.dinner.record;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
 import com.osheeep.server.dinner.menu.BusinessDateResolver;
 import com.osheeep.server.dinner.menu.DinnerMenuService;
 import com.osheeep.server.dinner.menu.entity.DinnerMenuActionEntity;
@@ -49,8 +47,7 @@ public class DinnerRecordService {
             "Incomplete dinner record dish snapshot";
     private static final int MAX_SNAPSHOT_STEPS = 12;
 
-    private final DinnerHouseholdMapper householdMapper;
-    private final DinnerHouseholdMemberMapper memberMapper;
+    private final DinnerHouseholdAccessService householdAccessService;
     private final DinnerMenuMapper menuMapper;
     private final DinnerMenuSelectionMapper selectionMapper;
     private final DinnerMenuActionMapper actionMapper;
@@ -64,8 +61,7 @@ public class DinnerRecordService {
 
     @Autowired
     public DinnerRecordService(
-            DinnerHouseholdMapper householdMapper,
-            DinnerHouseholdMemberMapper memberMapper,
+            DinnerHouseholdAccessService householdAccessService,
             DinnerMenuMapper menuMapper,
             DinnerMenuSelectionMapper selectionMapper,
             DinnerMenuActionMapper actionMapper,
@@ -76,14 +72,13 @@ public class DinnerRecordService {
             DinnerRecordSnapshotJsonCodec snapshotJsonCodec,
             BusinessDateResolver businessDateResolver
     ) {
-        this(householdMapper, memberMapper, menuMapper, selectionMapper, actionMapper,
+        this(householdAccessService, menuMapper, selectionMapper, actionMapper,
                 recordMapper, snapshotMapper, menuService, snapshotAssembler,
                 snapshotJsonCodec, businessDateResolver, Clock.systemUTC());
     }
 
     DinnerRecordService(
-            DinnerHouseholdMapper householdMapper,
-            DinnerHouseholdMemberMapper memberMapper,
+            DinnerHouseholdAccessService householdAccessService,
             DinnerMenuMapper menuMapper,
             DinnerMenuSelectionMapper selectionMapper,
             DinnerMenuActionMapper actionMapper,
@@ -95,8 +90,7 @@ public class DinnerRecordService {
             BusinessDateResolver businessDateResolver,
             Clock clock
     ) {
-        this.householdMapper = householdMapper;
-        this.memberMapper = memberMapper;
+        this.householdAccessService = householdAccessService;
         this.menuMapper = menuMapper;
         this.selectionMapper = selectionMapper;
         this.actionMapper = actionMapper;
@@ -111,25 +105,20 @@ public class DinnerRecordService {
 
     @Transactional
     public CompleteMenuResponse complete(Long userId, long expectedVersion, String idempotencyKey) {
-        DinnerHouseholdMemberEntity membership = memberMapper.selectOne(
-                Wrappers.<DinnerHouseholdMemberEntity>lambdaQuery()
-                        .eq(DinnerHouseholdMemberEntity::getUserId, userId)
-                        .last("LIMIT 1"));
-        if (membership == null) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
-        DinnerHouseholdEntity household = householdMapper.selectById(membership.getHouseholdId());
-        if (household == null || !"ACTIVE".equals(household.getStatus())) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
-        LocalDate menuDate = businessDateResolver.resolve(household.getTimezone(), clock.instant());
-        DinnerMenuEntity menu = menuMapper.selectByHouseholdAndDateForUpdate(household.getId(), menuDate);
+        ActiveHouseholdAccess access = householdAccessService.requireActiveHousehold(userId);
+        LocalDate menuDate = businessDateResolver.resolve(access.timezone(), clock.instant());
+        DinnerMenuEntity menu = menuMapper.selectByHouseholdAndDateForUpdate(
+                access.householdId(), menuDate);
         if (menu == null) {
             throw new BusinessException(ErrorCode.DINNER_MENU_NOT_CONFIRMED);
+        }
+        if (isPreMembershipCompletedMenu(menu, access.historyVisibleFrom())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN);
         }
 
         DinnerCookingRecordEntity existing = findRecord(menu.getId());
         if (existing != null) {
+            requireVisibleRecord(access, existing);
             return new CompleteMenuResponse(existing.getId(), menuService.today(userId));
         }
         if (!Objects.equals(menu.getVersion(), expectedVersion)) {
@@ -143,18 +132,19 @@ public class DinnerRecordService {
                 Wrappers.<DinnerMenuSelectionEntity>lambdaQuery()
                         .eq(DinnerMenuSelectionEntity::getMenuId, menu.getId()));
         List<DinnerRecordSnapshotAssembler.SnapshotDraft> snapshotDrafts =
-                snapshotAssembler.assemble(household.getId(), selections);
+                snapshotAssembler.assemble(access.householdId(), selections);
         List<EncodedSnapshotDraft> encodedSnapshotDrafts = snapshotDrafts.stream()
                 .map(this::encodeSnapshotDraft)
                 .toList();
 
         LocalDateTime now = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
         DinnerCookingRecordEntity record = new DinnerCookingRecordEntity();
-        record.setHouseholdId(household.getId());
+        record.setHouseholdId(access.householdId());
         record.setMenuId(menu.getId());
         record.setRecordDate(menu.getMenuDate());
         record.setCompletedBy(userId);
         record.setCompletedAt(now);
+        requireVisibleRecord(access, record);
         try {
             recordMapper.insert(record);
         } catch (DuplicateKeyException exception) {
@@ -162,6 +152,7 @@ public class DinnerRecordService {
             if (winner == null) {
                 throw exception;
             }
+            requireVisibleRecord(access, winner);
             return new CompleteMenuResponse(winner.getId(), menuService.today(userId));
         }
 
@@ -205,10 +196,13 @@ public class DinnerRecordService {
     }
 
     public List<RecordSummaryResponse> list(Long userId) {
-        DinnerHouseholdMemberEntity membership = requireMembership(userId);
+        ActiveHouseholdAccess access = householdAccessService.requireActiveHousehold(userId);
         return recordMapper.selectList(Wrappers.<DinnerCookingRecordEntity>lambdaQuery()
-                        .eq(DinnerCookingRecordEntity::getHouseholdId, membership.getHouseholdId())
-                        .orderByDesc(DinnerCookingRecordEntity::getCompletedAt))
+                        .eq(DinnerCookingRecordEntity::getHouseholdId, access.householdId())
+                        .ge(DinnerCookingRecordEntity::getCompletedAt,
+                                access.historyVisibleFrom())
+                        .orderByDesc(DinnerCookingRecordEntity::getCompletedAt)
+                        .orderByDesc(DinnerCookingRecordEntity::getId))
                 .stream()
                 .map(record -> new RecordSummaryResponse(
                         record.getId(), record.getRecordDate(), record.getCompletedBy(),
@@ -220,11 +214,9 @@ public class DinnerRecordService {
     }
 
     public RecordDetailResponse detail(Long userId, Long recordId) {
-        DinnerHouseholdMemberEntity membership = requireMembership(userId);
+        ActiveHouseholdAccess access = householdAccessService.requireActiveHousehold(userId);
         DinnerCookingRecordEntity record = recordMapper.selectById(recordId);
-        if (record == null || !membership.getHouseholdId().equals(record.getHouseholdId())) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
+        requireVisibleRecord(access, record);
         List<RecordDishResponse> dishes = snapshotMapper.selectList(
                         Wrappers.<DinnerRecordDishSnapshotEntity>lambdaQuery()
                                 .eq(DinnerRecordDishSnapshotEntity::getRecordId, recordId)
@@ -243,6 +235,27 @@ public class DinnerRecordService {
                 .last("LIMIT 1"));
     }
 
+    private void requireVisibleRecord(
+            ActiveHouseholdAccess access,
+            DinnerCookingRecordEntity record
+    ) {
+        if (record == null
+                || !Objects.equals(access.householdId(), record.getHouseholdId())
+                || record.getCompletedAt() == null
+                || record.getCompletedAt().isBefore(access.historyVisibleFrom())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
+    }
+
+    private boolean isPreMembershipCompletedMenu(
+            DinnerMenuEntity menu,
+            LocalDateTime historyVisibleFrom
+    ) {
+        return "COMPLETED".equals(menu.getStatus())
+                && (menu.getCompletedAt() == null
+                        || menu.getCompletedAt().isBefore(historyVisibleFrom));
+    }
+
     private String toJsonArray(Set<Long> userIds) {
         return userIds.stream().sorted().map(String::valueOf)
                 .collect(Collectors.joining(",", "[", "]"));
@@ -256,17 +269,6 @@ public class DinnerRecordService {
                 snapshotJsonCodec.writeSteps(draft.steps()),
                 snapshotJsonCodec.writeIngredients(draft.ingredients()),
                 toJsonArray(draft.selectedByUserIds()));
-    }
-
-    private DinnerHouseholdMemberEntity requireMembership(Long userId) {
-        DinnerHouseholdMemberEntity membership = memberMapper.selectOne(
-                Wrappers.<DinnerHouseholdMemberEntity>lambdaQuery()
-                        .eq(DinnerHouseholdMemberEntity::getUserId, userId)
-                        .last("LIMIT 1"));
-        if (membership == null) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
-        return membership;
     }
 
     private String source(String selectedByUserIds, Long currentUserId) {

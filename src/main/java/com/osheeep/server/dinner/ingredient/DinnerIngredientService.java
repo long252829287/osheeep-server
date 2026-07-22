@@ -3,8 +3,8 @@ package com.osheeep.server.dinner.ingredient;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
 import com.osheeep.server.dinner.ingredient.dto.IngredientResponse;
 import com.osheeep.server.dinner.ingredient.dto.InventoryItemResponse;
 import com.osheeep.server.dinner.ingredient.entity.DinnerHouseholdInventoryEntity;
@@ -32,26 +32,26 @@ public class DinnerIngredientService {
 
     private final DinnerIngredientMapper ingredientMapper;
     private final DinnerHouseholdInventoryMapper inventoryMapper;
-    private final DinnerHouseholdMemberMapper memberMapper;
+    private final DinnerHouseholdAccessService accessService;
 
     public DinnerIngredientService(
             DinnerIngredientMapper ingredientMapper,
             DinnerHouseholdInventoryMapper inventoryMapper,
-            DinnerHouseholdMemberMapper memberMapper
+            DinnerHouseholdAccessService accessService
     ) {
         this.ingredientMapper = ingredientMapper;
         this.inventoryMapper = inventoryMapper;
-        this.memberMapper = memberMapper;
+        this.accessService = accessService;
     }
 
     public List<IngredientResponse> listIngredients(Long userId) {
-        DinnerHouseholdMemberEntity membership = requireMembership(userId);
+        ActiveHouseholdAccess access = accessService.requireActiveHousehold(userId);
         return ingredientMapper.selectList(Wrappers.<DinnerIngredientEntity>lambdaQuery()
                         .eq(DinnerIngredientEntity::getStatus, "ACTIVE")
                         .and(ingredient -> ingredient
                                 .eq(DinnerIngredientEntity::getScope, "SYSTEM")
                                 .or()
-                                .eq(DinnerIngredientEntity::getHouseholdId, membership.getHouseholdId()))
+                                .eq(DinnerIngredientEntity::getHouseholdId, access.householdId()))
                         .orderByAsc(DinnerIngredientEntity::getId))
                 .stream()
                 .map(this::toIngredientResponse)
@@ -59,10 +59,10 @@ public class DinnerIngredientService {
     }
 
     public List<InventoryItemResponse> listInventory(Long userId) {
-        DinnerHouseholdMemberEntity membership = requireMembership(userId);
+        ActiveHouseholdAccess access = accessService.requireActiveHousehold(userId);
         List<DinnerHouseholdInventoryEntity> items = inventoryMapper.selectList(
                 Wrappers.<DinnerHouseholdInventoryEntity>lambdaQuery()
-                        .eq(DinnerHouseholdInventoryEntity::getHouseholdId, membership.getHouseholdId())
+                        .eq(DinnerHouseholdInventoryEntity::getHouseholdId, access.householdId())
                         .orderByAsc(DinnerHouseholdInventoryEntity::getId));
         if (items.isEmpty()) {
             return List.of();
@@ -88,17 +88,17 @@ public class DinnerIngredientService {
             String unit,
             long expectedVersion
     ) {
-        DinnerHouseholdMemberEntity membership = requireMembership(userId);
+        ActiveHouseholdAccess access = accessService.requireActiveHousehold(userId);
         DinnerIngredientEntity ingredient = requireActiveIngredient(
-                ingredientId, membership.getHouseholdId());
+                ingredientId, access.householdId());
         DinnerHouseholdInventoryEntity item = lockInventoryItem(
-                membership.getHouseholdId(), ingredientId);
+                access.householdId(), ingredientId);
         if (item == null) {
             if (expectedVersion != 0L) {
                 throw new BusinessException(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT);
             }
             item = new DinnerHouseholdInventoryEntity();
-            item.setHouseholdId(membership.getHouseholdId());
+            item.setHouseholdId(access.householdId());
             item.setIngredientId(ingredientId);
             item.setVersion(1L);
             item.setQuantity(quantity);
@@ -121,9 +121,9 @@ public class DinnerIngredientService {
 
     @Transactional
     public void removeInventoryItem(Long userId, Long ingredientId, long expectedVersion) {
-        DinnerHouseholdMemberEntity membership = requireMembership(userId);
+        ActiveHouseholdAccess access = accessService.requireActiveHousehold(userId);
         DinnerHouseholdInventoryEntity item = inventoryMapper
-                .selectByHouseholdAndIngredientForUpdate(membership.getHouseholdId(), ingredientId);
+                .selectByHouseholdAndIngredientForUpdate(access.householdId(), ingredientId);
         if (item == null) {
             throw new BusinessException(ErrorCode.DINNER_INVENTORY_ITEM_NOT_FOUND);
         }
@@ -131,20 +131,9 @@ public class DinnerIngredientService {
             throw new BusinessException(ErrorCode.DINNER_INVENTORY_VERSION_CONFLICT);
         }
         inventoryMapper.delete(Wrappers.<DinnerHouseholdInventoryEntity>lambdaQuery()
-                .eq(DinnerHouseholdInventoryEntity::getHouseholdId, membership.getHouseholdId())
+                .eq(DinnerHouseholdInventoryEntity::getHouseholdId, access.householdId())
                 .eq(DinnerHouseholdInventoryEntity::getIngredientId, ingredientId)
                 .eq(DinnerHouseholdInventoryEntity::getVersion, expectedVersion));
-    }
-
-    private DinnerHouseholdMemberEntity requireMembership(Long userId) {
-        DinnerHouseholdMemberEntity membership = memberMapper.selectOne(
-                Wrappers.<DinnerHouseholdMemberEntity>lambdaQuery()
-                        .eq(DinnerHouseholdMemberEntity::getUserId, userId)
-                        .last("LIMIT 1"));
-        if (membership == null) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
-        return membership;
     }
 
     private DinnerIngredientEntity requireActiveIngredient(Long ingredientId, Long householdId) {

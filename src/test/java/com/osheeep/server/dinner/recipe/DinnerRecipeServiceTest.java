@@ -3,6 +3,7 @@ package com.osheeep.server.dinner.recipe;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -14,6 +15,10 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
+import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
+import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
+import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
+import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
 import com.osheeep.server.dinner.ingredient.entity.DinnerHouseholdInventoryEntity;
 import com.osheeep.server.dinner.ingredient.mapper.DinnerHouseholdInventoryMapper;
 import com.osheeep.server.dinner.recipe.DinnerRecipeAuthorizer.RecipeAccess;
@@ -23,6 +28,7 @@ import com.osheeep.server.dinner.recipe.entity.DinnerRecipeEntity;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeIngredientRow;
 import com.osheeep.server.dinner.recipe.mapper.DinnerRecipeMapper;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +38,8 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -43,6 +51,8 @@ class DinnerRecipeServiceTest {
     @Mock private DinnerHouseholdInventoryMapper inventoryMapper;
     @Mock private DinnerRecipeAuthorizer authorizer;
     @Mock private DinnerRecipeCatalogAssembler catalogAssembler;
+    @Mock private DinnerHouseholdMemberMapper memberMapper;
+    @Mock private DinnerHouseholdMapper householdMapper;
 
     private DinnerRecipeService service;
 
@@ -228,6 +238,46 @@ class DinnerRecipeServiceTest {
         verifyNoInteractions(recipeMapper, catalogAssembler, inventoryMapper);
     }
 
+    @ParameterizedTest(name = "{0} member cannot discover recipes from the old household")
+    @ValueSource(strings = {"LEFT", "REMOVED"})
+    void formerMemberCannotDiscoverOldHouseholdRecipes(String membershipStatus) {
+        DinnerHouseholdMemberEntity membership = membership(7L, 70L, membershipStatus);
+        when(memberMapper.selectActiveByUserId(7L)).thenReturn(membership);
+        lenient().when(householdMapper.selectById(70L))
+                .thenReturn(household(70L, "ACTIVE"));
+
+        DinnerRecipeService accessControlledService = serviceWithRealAuthorizer();
+
+        assertThatThrownBy(() ->
+                accessControlledService.discover(7L, Set.of(), Set.of(), false))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode().name())
+                                .isEqualTo("DINNER_HOUSEHOLD_REQUIRED"));
+
+        verifyNoInteractions(catalogAssembler, inventoryMapper);
+    }
+
+    @ParameterizedTest(name = "ACTIVE member cannot discover when household is {0}")
+    @ValueSource(strings = {"MISSING", "DISSOLVED"})
+    void activeMemberCannotDiscoverWithoutActiveHousehold(String householdStatus) {
+        when(memberMapper.selectActiveByUserId(7L))
+                .thenReturn(membership(7L, 70L, "ACTIVE"));
+        if (!"MISSING".equals(householdStatus)) {
+            when(householdMapper.selectById(70L))
+                    .thenReturn(household(70L, householdStatus));
+        }
+
+        DinnerRecipeService accessControlledService = serviceWithRealAuthorizer();
+
+        assertThatThrownBy(() ->
+                accessControlledService.discover(7L, Set.of(), Set.of(), false))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode().name())
+                                .isEqualTo("DINNER_HOUSEHOLD_REQUIRED"));
+
+        verifyNoInteractions(catalogAssembler, inventoryMapper);
+    }
+
     @Test
     void systemListUsesExpandedSystemIdentityWithoutHouseholdLookup() {
         DinnerRecipeEntity system = systemRecipe(1L, "番茄炒蛋", 10);
@@ -253,6 +303,40 @@ class DinnerRecipeServiceTest {
         when(recipeMapper.selectList(any())).thenReturn(recipes);
         when(catalogAssembler.assemble(recipes)).thenReturn(catalog(recipes, requirements));
         when(inventoryMapper.selectList(any())).thenReturn(inventory);
+    }
+
+    private DinnerRecipeService serviceWithRealAuthorizer() {
+        return new DinnerRecipeService(
+                recipeMapper,
+                inventoryMapper,
+                new DinnerRecipeAuthorizer(memberMapper, householdMapper, recipeMapper),
+                catalogAssembler,
+                new RecipeMatchCalculator());
+    }
+
+    private DinnerHouseholdMemberEntity membership(
+            Long userId,
+            Long householdId,
+            String status
+    ) {
+        DinnerHouseholdMemberEntity membership = new DinnerHouseholdMemberEntity();
+        membership.setId(11L);
+        membership.setUserId(userId);
+        membership.setHouseholdId(householdId);
+        membership.setStatus(status);
+        membership.setRole("MEMBER");
+        membership.setVersion(1L);
+        membership.setHistoryVisibleFrom(LocalDateTime.of(2026, 7, 1, 0, 0));
+        return membership;
+    }
+
+    private DinnerHouseholdEntity household(Long id, String status) {
+        DinnerHouseholdEntity household = new DinnerHouseholdEntity();
+        household.setId(id);
+        household.setStatus(status);
+        household.setVersion(1L);
+        household.setTimezone("Asia/Shanghai");
+        return household;
     }
 
     private Map<Long, DinnerRecipeCatalogAssembler.CatalogEntry> catalog(

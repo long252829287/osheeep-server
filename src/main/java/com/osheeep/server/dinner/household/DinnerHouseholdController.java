@@ -1,5 +1,6 @@
 package com.osheeep.server.dinner.household;
 
+import com.fasterxml.jackson.databind.node.NullNode;
 import com.osheeep.server.common.api.ApiResponse;
 import com.osheeep.server.common.security.CurrentUser;
 import com.osheeep.server.dinner.household.dto.CreateHouseholdRequest;
@@ -27,8 +28,9 @@ public class DinnerHouseholdController {
     }
 
     @GetMapping("/household")
-    public ApiResponse<HouseholdResponse> current(@AuthenticationPrincipal CurrentUser currentUser) {
-        return ApiResponse.ok(householdService.current(currentUser.id()));
+    public ApiResponse<?> current(@AuthenticationPrincipal CurrentUser currentUser) {
+        HouseholdResponse household = householdService.current(currentUser.id());
+        return ApiResponse.ok(household == null ? NullNode.getInstance() : household);
     }
 
     @PostMapping("/households")

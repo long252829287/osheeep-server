@@ -7,14 +7,15 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
 import com.osheeep.server.dinner.ingredient.dto.IngredientResponse;
 import com.osheeep.server.dinner.ingredient.dto.InventoryItemResponse;
 import com.osheeep.server.dinner.ingredient.entity.DinnerHouseholdInventoryEntity;
@@ -28,6 +29,8 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.CannotAcquireLockException;
@@ -39,18 +42,18 @@ class DinnerIngredientServiceTest {
 
     @Mock private DinnerIngredientMapper ingredientMapper;
     @Mock private DinnerHouseholdInventoryMapper inventoryMapper;
-    @Mock private DinnerHouseholdMemberMapper memberMapper;
+    @Mock private DinnerHouseholdAccessService accessService;
 
     private DinnerIngredientService service;
 
     @BeforeEach
     void setUp() {
-        service = new DinnerIngredientService(ingredientMapper, inventoryMapper, memberMapper);
+        service = new DinnerIngredientService(ingredientMapper, inventoryMapper, accessService);
     }
 
     @Test
     void listsAccessibleActiveIngredientsForCurrentHousehold() {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectList(any())).thenReturn(List.of(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"),
                 ingredient(4L, "HOUSEHOLD", 11L, "冻豆腐", "豆制品", "块", "ACTIVE")));
@@ -65,7 +68,7 @@ class DinnerIngredientServiceTest {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 2L);
         item.setUpdatedBy(8L);
         item.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 6, 30));
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(inventoryMapper.selectList(any())).thenReturn(List.of(item));
         when(ingredientMapper.selectByIds(List.of(3L))).thenReturn(List.of(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE")));
@@ -81,7 +84,7 @@ class DinnerIngredientServiceTest {
         persisted.setId(21L);
         persisted.setUpdatedBy(7L);
         persisted.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 7, 30));
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
@@ -106,7 +109,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void newInventoryItemRejectsNonzeroExpectedVersion() {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
@@ -122,7 +125,7 @@ class DinnerIngredientServiceTest {
     @Test
     void existingInventoryItemRejectsCreateOnlyExpectedVersionWithoutMutation() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 0L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -141,7 +144,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void concurrentInsertDuplicateKeyBecomesVersionConflict() {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
@@ -157,7 +160,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void lockAcquisitionFailureBecomesVersionConflict() {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -174,7 +177,7 @@ class DinnerIngredientServiceTest {
     void deadlockFailureBecomesVersionConflict() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 1L);
         item.setId(21L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -198,7 +201,7 @@ class DinnerIngredientServiceTest {
         persisted.setId(21L);
         persisted.setUpdatedBy(7L);
         persisted.setUpdatedAt(LocalDateTime.of(2026, 7, 15, 7, 30));
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -229,7 +232,7 @@ class DinnerIngredientServiceTest {
     @Test
     void staleInventoryVersionDoesNotMutateTheItem() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 4L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "ACTIVE"));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L))
@@ -247,7 +250,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void rejectsForeignHouseholdIngredient() {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "HOUSEHOLD", 12L, "冻豆腐", "豆制品", "块", "ACTIVE"));
 
@@ -260,7 +263,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void rejectsInactiveSystemIngredient() {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(ingredientMapper.selectById(3L)).thenReturn(
                 ingredient(3L, "SYSTEM", null, "鸡蛋", "蛋奶", "枚", "INACTIVE"));
 
@@ -273,18 +276,48 @@ class DinnerIngredientServiceTest {
 
     @Test
     void inventoryOperationsRequireMembership() {
-        when(memberMapper.selectOne(any())).thenReturn(null);
+        when(accessService.requireActiveHousehold(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
 
         assertThatThrownBy(() -> service.listInventory(7L))
                 .isInstanceOfSatisfying(BusinessException.class, error ->
-                        assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+    }
+
+    @ParameterizedTest(name = "{0} member cannot list old-household ingredients")
+    @ValueSource(strings = {"LEFT", "REMOVED"})
+    void formerMemberCannotListOldHouseholdIngredients(String membershipStatus) {
+        when(accessService.requireActiveHousehold(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.listIngredients(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode().name())
+                                .isEqualTo("DINNER_HOUSEHOLD_REQUIRED"));
+
+        verifyNoInteractions(ingredientMapper, inventoryMapper);
+    }
+
+    @ParameterizedTest(name = "{0} member cannot list old-household inventory")
+    @ValueSource(strings = {"LEFT", "REMOVED"})
+    void formerMemberCannotListOldHouseholdInventory(String membershipStatus) {
+        when(accessService.requireActiveHousehold(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.listInventory(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode().name())
+                                .isEqualTo("DINNER_HOUSEHOLD_REQUIRED"));
+
+        verifyNoInteractions(ingredientMapper, inventoryMapper);
     }
 
     @Test
     void deletingAnInventoryItemUsesExactVersion() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 2L);
         item.setId(21L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(item);
 
         service.removeInventoryItem(7L, 3L, 2L);
@@ -294,7 +327,7 @@ class DinnerIngredientServiceTest {
 
     @Test
     void deletingMissingInventoryItemReturnsNotFound() {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(null);
 
         assertThatThrownBy(() -> service.removeInventoryItem(7L, 3L, 0L))
@@ -307,7 +340,7 @@ class DinnerIngredientServiceTest {
     @Test
     void staleDeleteDoesNotRemoveInventoryItem() {
         DinnerHouseholdInventoryEntity item = inventory(11L, 3L, "6.000", "枚", 2L);
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
+        when(accessService.requireActiveHousehold(7L)).thenReturn(access(7L, 11L));
         when(inventoryMapper.selectByHouseholdAndIngredientForUpdate(11L, 3L)).thenReturn(item);
 
         assertThatThrownBy(() -> service.removeInventoryItem(7L, 3L, 1L))
@@ -317,11 +350,16 @@ class DinnerIngredientServiceTest {
         verify(inventoryMapper, never()).delete(any());
     }
 
-    private DinnerHouseholdMemberEntity member(Long householdId, Long userId) {
-        DinnerHouseholdMemberEntity member = new DinnerHouseholdMemberEntity();
-        member.setHouseholdId(householdId);
-        member.setUserId(userId);
-        return member;
+    private ActiveHouseholdAccess access(Long userId, Long householdId) {
+        return new ActiveHouseholdAccess(
+                userId,
+                householdId,
+                31L,
+                1L,
+                "MEMBER",
+                LocalDateTime.of(2026, 7, 1, 0, 0),
+                1L,
+                "Asia/Shanghai");
     }
 
     private DinnerIngredientEntity ingredient(

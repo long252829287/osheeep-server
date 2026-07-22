@@ -11,12 +11,13 @@ import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
 import com.osheeep.server.dinner.image.DinnerImageAssetService;
 import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
 import com.osheeep.server.dinner.menu.dto.MenuDishResponse;
@@ -37,6 +38,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -55,8 +57,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 @ExtendWith(MockitoExtension.class)
 class DinnerMenuServiceTest {
 
-    @Mock private DinnerHouseholdMapper householdMapper;
-    @Mock private DinnerHouseholdMemberMapper memberMapper;
+    @Mock private DinnerHouseholdAccessService householdAccessService;
     @Mock private DinnerMenuMapper menuMapper;
     @Mock private DinnerMenuSelectionMapper selectionMapper;
     @Mock private DinnerMenuActionMapper actionMapper;
@@ -72,15 +73,13 @@ class DinnerMenuServiceTest {
         MapperBuilderAssistant assistant =
                 new MapperBuilderAssistant(new MybatisConfiguration(), "test");
         Stream.of(
-                        DinnerHouseholdMemberEntity.class,
                         DinnerMenuEntity.class,
                         DinnerMenuSelectionEntity.class,
                         DinnerMenuActionEntity.class)
                 .forEach(entity -> TableInfoHelper.initTableInfo(assistant, entity));
         Clock clock = Clock.fixed(Instant.parse("2026-07-11T10:00:00Z"), ZoneOffset.UTC);
         service = new DinnerMenuService(
-                householdMapper,
-                memberMapper,
+                householdAccessService,
                 menuMapper,
                 selectionMapper,
                 actionMapper,
@@ -146,6 +145,36 @@ class DinnerMenuServiceTest {
         verifyNoInteractions(catalogAssembler);
     }
 
+    @ParameterizedTest(name = "{0} membership cannot read its former household menu")
+    @MethodSource("inactiveMembershipStatuses")
+    void todayRejectsInactiveMembership(String membershipStatus) {
+        when(householdAccessService.requireActiveHousehold(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.today(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThat(membershipStatus).isIn("LEFT", "REMOVED");
+        verifyNoInteractions(menuMapper, selectionMapper, recipeMapper);
+    }
+
+    @ParameterizedTest(name = "ACTIVE membership rejects {0} household")
+    @MethodSource("unavailableHouseholds")
+    void todayRejectsActiveMembershipWithoutActiveHousehold(String reason) {
+        when(householdAccessService.requireActiveHousehold(7L))
+                .thenThrow(new BusinessException(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThatThrownBy(() -> service.today(7L))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.errorCode())
+                                .isEqualTo(ErrorCode.DINNER_HOUSEHOLD_REQUIRED));
+
+        assertThat(reason).isNotBlank();
+        verifyNoInteractions(menuMapper, selectionMapper, recipeMapper);
+    }
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("damagedPublishedHouseholdAggregates")
     void damagedPublishedHouseholdAggregateFailsBeforeSelectionWrites(String reason) {
@@ -186,6 +215,98 @@ class DinnerMenuServiceTest {
                     .isEqualTo(new RecipeMethodSummaryResponse(21L, "家常做法", "炒"));
         });
         assertThat(result.consensusCount()).isEqualTo(1);
+        assertThat(result.historyVisible()).isTrue();
+    }
+
+    @Test
+    void todayMasksCompletedMenuBeforeCurrentMembershipVisibilityWindow() {
+        DinnerMenuEntity menu = menu(31L);
+        menu.setStatus("COMPLETED");
+        menu.setVersion(6L);
+        menu.setConfirmedBy(8L);
+        menu.setConfirmedAt(LocalDateTime.of(2026, 7, 11, 9, 30));
+        menu.setCompletedBy(8L);
+        menu.setCompletedAt(LocalDateTime.of(2026, 7, 11, 10, 0));
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(
+                access(LocalDateTime.of(2026, 7, 11, 11, 0)));
+        when(menuMapper.selectOne(any())).thenReturn(menu);
+
+        var result = service.today(7L);
+
+        assertThat(result.menuDate()).isEqualTo(LocalDate.of(2026, 7, 11));
+        assertThat(result.status()).isEqualTo("PRE_MEMBERSHIP");
+        assertThat(result.id()).isNull();
+        assertThat(result.version()).isNull();
+        assertThat(result.recordId()).isNull();
+        assertThat(result.selectedRecipeIds()).isNullOrEmpty();
+        assertThat(result.dishes()).isNullOrEmpty();
+        assertThat(result.confirmedBy()).isNull();
+        assertThat(result.completedBy()).isNull();
+        assertThat(result.historyVisible()).isFalse();
+        JsonNode serialized = new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .valueToTree(result);
+        List<String> serializedFields = new java.util.ArrayList<>();
+        serialized.fieldNames().forEachRemaining(serializedFields::add);
+        assertThat(serializedFields)
+                .containsExactly("menuDate", "status", "historyVisible");
+        assertThat(serialized.path("status").asText()).isEqualTo("PRE_MEMBERSHIP");
+        assertThat(serialized.path("historyVisible").asBoolean()).isFalse();
+        verifyNoInteractions(selectionMapper, recipeMapper, methodMapper, imageAssetService);
+    }
+
+    @Test
+    void todayFailsClosedWhenCompletedMenuHasNoCompletionTime() {
+        DinnerMenuEntity menu = menu(31L);
+        menu.setStatus("COMPLETED");
+        menu.setCompletedAt(null);
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
+        when(menuMapper.selectOne(any())).thenReturn(menu);
+
+        var result = service.today(7L);
+
+        assertThat(result.status()).isEqualTo("PRE_MEMBERSHIP");
+        assertThat(result.historyVisible()).isFalse();
+        verifyNoInteractions(selectionMapper, recipeMapper, methodMapper, imageAssetService);
+    }
+
+    @Test
+    void todayKeepsCompletedMenuVisibleAtTheExactMembershipBoundary() {
+        LocalDateTime visibleFrom = LocalDateTime.of(2026, 7, 11, 10, 0);
+        DinnerMenuEntity menu = menu(31L);
+        menu.setStatus("COMPLETED");
+        menu.setCompletedAt(visibleFrom);
+        when(householdAccessService.requireActiveHousehold(7L))
+                .thenReturn(access(visibleFrom));
+        when(menuMapper.selectOne(any())).thenReturn(menu);
+        when(selectionMapper.selectList(any())).thenReturn(List.of());
+
+        var result = service.today(7L);
+
+        assertThat(result.id()).isEqualTo(31L);
+        assertThat(result.status()).isEqualTo("COMPLETED");
+        assertThat(result.historyVisible()).isTrue();
+    }
+
+    @Test
+    void confirmReplayMasksACompletedMenuBeforeTheMembershipBoundary() {
+        DinnerMenuEntity menu = menu(31L);
+        menu.setStatus("COMPLETED");
+        menu.setCompletedAt(LocalDateTime.of(2026, 7, 11, 10, 0));
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(
+                access(LocalDateTime.of(2026, 7, 11, 11, 0)));
+        when(menuMapper.selectByHouseholdAndDateForUpdate(
+                11L, LocalDate.of(2026, 7, 11))).thenReturn(menu);
+        when(actionMapper.selectOne(any())).thenReturn(new DinnerMenuActionEntity());
+
+        var result = service.confirm(
+                7L, 6L, "00000000-0000-4000-8000-000000000099");
+
+        assertThat(result.status()).isEqualTo("PRE_MEMBERSHIP");
+        assertThat(result.id()).isNull();
+        assertThat(result.recordId()).isNull();
+        assertThat(result.historyVisible()).isFalse();
+        verifyNoInteractions(selectionMapper, recipeMapper, methodMapper, imageAssetService);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -287,8 +408,7 @@ class DinnerMenuServiceTest {
 
     @Test
     void todayCreatesTheBusinessDayDraftWhenMissing() {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
         when(menuMapper.selectOne(any())).thenReturn(null);
         when(menuMapper.insert(any(DinnerMenuEntity.class))).thenAnswer(invocation -> {
             invocation.<DinnerMenuEntity>getArgument(0).setId(31L);
@@ -418,6 +538,14 @@ class DinnerMenuServiceTest {
                 "missing approved image");
     }
 
+    private static Stream<String> inactiveMembershipStatuses() {
+        return Stream.of("LEFT", "REMOVED");
+    }
+
+    private static Stream<String> unavailableHouseholds() {
+        return Stream.of("missing", "inactive");
+    }
+
     private static Stream<org.junit.jupiter.params.provider.Arguments>
             conflictingSelectionIdentities() {
         return Stream.of(
@@ -451,30 +579,24 @@ class DinnerMenuServiceTest {
     }
 
     private void stubLockedContext(DinnerMenuEntity menu) {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
         when(menuMapper.selectByHouseholdAndDateForUpdate(
                 11L, LocalDate.of(2026, 7, 11))).thenReturn(menu);
     }
 
     private void stubTodayContext(DinnerMenuEntity menu) {
-        when(memberMapper.selectOne(any())).thenReturn(member(11L, 7L));
-        when(householdMapper.selectById(11L)).thenReturn(household(11L));
+        when(householdAccessService.requireActiveHousehold(7L)).thenReturn(access());
         when(menuMapper.selectOne(any())).thenReturn(menu);
     }
 
-    private static DinnerHouseholdMemberEntity member(Long householdId, Long userId) {
-        DinnerHouseholdMemberEntity member = new DinnerHouseholdMemberEntity();
-        member.setHouseholdId(householdId);
-        member.setUserId(userId);
-        return member;
+    private static ActiveHouseholdAccess access() {
+        return access(LocalDateTime.of(1970, 1, 1, 0, 0));
     }
 
-    private static DinnerHouseholdEntity household(Long id) {
-        DinnerHouseholdEntity household = new DinnerHouseholdEntity();
-        household.setId(id);
-        household.setTimezone("Asia/Shanghai");
-        return household;
+    private static ActiveHouseholdAccess access(LocalDateTime historyVisibleFrom) {
+        return new ActiveHouseholdAccess(
+                7L, 11L, 41L, 4L, "OWNER", historyVisibleFrom,
+                8L, "Asia/Shanghai");
     }
 
     private static DinnerMenuEntity menu(Long id) {

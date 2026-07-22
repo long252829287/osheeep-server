@@ -33,6 +33,7 @@ public class DinnerHouseholdService {
     private final DinnerHouseholdMemberMapper memberMapper;
     private final DinnerInviteCodeMapper inviteMapper;
     private final InviteCodeHasher inviteCodeHasher;
+    private final DinnerHouseholdAccessService accessService;
     private final Clock clock;
     private final SecureRandom secureRandom;
 
@@ -41,9 +42,17 @@ public class DinnerHouseholdService {
             DinnerHouseholdMapper householdMapper,
             DinnerHouseholdMemberMapper memberMapper,
             DinnerInviteCodeMapper inviteMapper,
-            InviteCodeHasher inviteCodeHasher
+            InviteCodeHasher inviteCodeHasher,
+            DinnerHouseholdAccessService accessService
     ) {
-        this(householdMapper, memberMapper, inviteMapper, inviteCodeHasher, Clock.systemUTC(), new SecureRandom());
+        this(
+                householdMapper,
+                memberMapper,
+                inviteMapper,
+                inviteCodeHasher,
+                accessService,
+                Clock.systemUTC(),
+                new SecureRandom());
     }
 
     DinnerHouseholdService(
@@ -54,21 +63,40 @@ public class DinnerHouseholdService {
             Clock clock,
             SecureRandom secureRandom
     ) {
+        this(
+                householdMapper,
+                memberMapper,
+                inviteMapper,
+                inviteCodeHasher,
+                new DinnerHouseholdAccessService(memberMapper, householdMapper),
+                clock,
+                secureRandom);
+    }
+
+    DinnerHouseholdService(
+            DinnerHouseholdMapper householdMapper,
+            DinnerHouseholdMemberMapper memberMapper,
+            DinnerInviteCodeMapper inviteMapper,
+            InviteCodeHasher inviteCodeHasher,
+            DinnerHouseholdAccessService accessService,
+            Clock clock,
+            SecureRandom secureRandom
+    ) {
         this.householdMapper = householdMapper;
         this.memberMapper = memberMapper;
         this.inviteMapper = inviteMapper;
         this.inviteCodeHasher = inviteCodeHasher;
+        this.accessService = accessService;
         this.clock = clock;
         this.secureRandom = secureRandom;
     }
 
     public HouseholdResponse current(Long userId) {
-        DinnerHouseholdMemberEntity membership = findMembership(userId);
-        if (membership == null) {
+        DinnerHouseholdEntity household = accessService.findActiveHousehold(userId);
+        if (household == null) {
             return null;
         }
-        DinnerHouseholdEntity household = householdMapper.selectById(membership.getHouseholdId());
-        long memberCount = countMembers(membership.getHouseholdId());
+        long memberCount = countMembers(household.getId());
         return response(household, memberCount);
     }
 
@@ -159,21 +187,16 @@ public class DinnerHouseholdService {
         throw new BusinessException(ErrorCode.BUSINESS_ERROR, "Unable to create invite code");
     }
 
-    private DinnerHouseholdMemberEntity findMembership(Long userId) {
-        return memberMapper.selectOne(Wrappers.<DinnerHouseholdMemberEntity>lambdaQuery()
-                .eq(DinnerHouseholdMemberEntity::getUserId, userId)
-                .last("LIMIT 1"));
-    }
-
     private void requireNotInHousehold(Long userId) {
-        if (findMembership(userId) != null) {
+        if (accessService.findActiveMembership(userId) != null) {
             throw new BusinessException(ErrorCode.DINNER_ALREADY_IN_HOUSEHOLD);
         }
     }
 
     private long countMembers(Long householdId) {
         return memberMapper.selectCount(Wrappers.<DinnerHouseholdMemberEntity>lambdaQuery()
-                .eq(DinnerHouseholdMemberEntity::getHouseholdId, householdId));
+                .eq(DinnerHouseholdMemberEntity::getHouseholdId, householdId)
+                .eq(DinnerHouseholdMemberEntity::getStatus, "ACTIVE"));
     }
 
     private DinnerHouseholdMemberEntity member(Long householdId, Long userId) {

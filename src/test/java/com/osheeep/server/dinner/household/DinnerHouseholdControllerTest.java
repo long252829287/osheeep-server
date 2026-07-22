@@ -2,6 +2,7 @@ package com.osheeep.server.dinner.household;
 
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.when;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -55,13 +56,13 @@ class DinnerHouseholdControllerTest {
     }
 
     @Test
-    void currentHouseholdOmitsDataWhenUserIsUnbound() throws Exception {
+    void currentHouseholdReturnsExplicitNullDataWhenUserIsUnbound() throws Exception {
         when(householdService.current(7L)).thenReturn(null);
 
         mockMvc.perform(authenticated(get("/api/dinner/household")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.data").doesNotExist());
+                .andExpect(jsonPath("$.data").value(nullValue()));
     }
 
     @Test

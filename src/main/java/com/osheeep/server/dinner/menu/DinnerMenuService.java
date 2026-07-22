@@ -3,10 +3,8 @@ package com.osheeep.server.dinner.menu;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.osheeep.server.common.error.BusinessException;
 import com.osheeep.server.common.error.ErrorCode;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdEntity;
-import com.osheeep.server.dinner.household.entity.DinnerHouseholdMemberEntity;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMapper;
-import com.osheeep.server.dinner.household.mapper.DinnerHouseholdMemberMapper;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService;
+import com.osheeep.server.dinner.household.DinnerHouseholdAccessService.ActiveHouseholdAccess;
 import com.osheeep.server.dinner.image.DinnerImageAssetService;
 import com.osheeep.server.dinner.image.dto.ImageAssetResponse;
 import com.osheeep.server.dinner.menu.dto.MenuDishResponse;
@@ -46,8 +44,7 @@ import org.springframework.util.StringUtils;
 @Service
 public class DinnerMenuService {
 
-    private final DinnerHouseholdMapper householdMapper;
-    private final DinnerHouseholdMemberMapper memberMapper;
+    private final DinnerHouseholdAccessService householdAccessService;
     private final DinnerMenuMapper menuMapper;
     private final DinnerMenuSelectionMapper selectionMapper;
     private final DinnerMenuActionMapper actionMapper;
@@ -60,8 +57,7 @@ public class DinnerMenuService {
 
     @Autowired
     public DinnerMenuService(
-            DinnerHouseholdMapper householdMapper,
-            DinnerHouseholdMemberMapper memberMapper,
+            DinnerHouseholdAccessService householdAccessService,
             DinnerMenuMapper menuMapper,
             DinnerMenuSelectionMapper selectionMapper,
             DinnerMenuActionMapper actionMapper,
@@ -71,14 +67,13 @@ public class DinnerMenuService {
             DinnerRecipeCatalogAssembler catalogAssembler,
             BusinessDateResolver businessDateResolver
     ) {
-        this(householdMapper, memberMapper, menuMapper, selectionMapper, actionMapper,
+        this(householdAccessService, menuMapper, selectionMapper, actionMapper,
                 recipeMapper, methodMapper, imageAssetService, catalogAssembler,
                 businessDateResolver, Clock.systemUTC());
     }
 
     DinnerMenuService(
-            DinnerHouseholdMapper householdMapper,
-            DinnerHouseholdMemberMapper memberMapper,
+            DinnerHouseholdAccessService householdAccessService,
             DinnerMenuMapper menuMapper,
             DinnerMenuSelectionMapper selectionMapper,
             DinnerMenuActionMapper actionMapper,
@@ -89,8 +84,7 @@ public class DinnerMenuService {
             BusinessDateResolver businessDateResolver,
             Clock clock
     ) {
-        this.householdMapper = householdMapper;
-        this.memberMapper = memberMapper;
+        this.householdAccessService = householdAccessService;
         this.menuMapper = menuMapper;
         this.selectionMapper = selectionMapper;
         this.actionMapper = actionMapper;
@@ -103,21 +97,13 @@ public class DinnerMenuService {
     }
 
     public TodayMenuResponse today(Long userId) {
-        DinnerHouseholdMemberEntity membership = findMembership(userId);
-        if (membership == null) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
-        DinnerHouseholdEntity household = householdMapper.selectById(membership.getHouseholdId());
-        if (household == null
-                || household.getStatus() != null && !"ACTIVE".equals(household.getStatus())) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
-        LocalDate menuDate = businessDateResolver.resolve(household.getTimezone(), clock.instant());
-        DinnerMenuEntity menu = findMenu(household.getId(), menuDate);
+        ActiveHouseholdAccess access = householdAccessService.requireActiveHousehold(userId);
+        LocalDate menuDate = businessDateResolver.resolve(access.timezone(), clock.instant());
+        DinnerMenuEntity menu = findMenu(access.householdId(), menuDate);
         if (menu == null) {
-            menu = createDraft(household.getId(), menuDate);
+            menu = createDraft(access.householdId(), menuDate);
         }
-        return response(menu, userId);
+        return response(menu, userId, access);
     }
 
     @Transactional
@@ -135,7 +121,7 @@ public class DinnerMenuService {
                 ? List.of()
                 : requestedRecipeIds.stream().filter(Objects::nonNull).distinct().sorted().toList();
         Map<Long, ValidatedRecipe> recipesById =
-                validateRecipes(recipeIds, context.household().getId());
+                validateRecipes(recipeIds, context.access().householdId());
 
         List<DinnerMenuSelectionEntity> currentSelections = selections(menu.getId());
         List<Long> currentUserRecipeIds = currentSelections.stream()
@@ -145,7 +131,7 @@ public class DinnerMenuService {
                 .sorted()
                 .toList();
         if (currentUserRecipeIds.equals(recipeIds)) {
-            return response(menu, userId);
+            return response(context, userId);
         }
 
         selectionMapper.delete(Wrappers.<DinnerMenuSelectionEntity>lambdaQuery()
@@ -169,7 +155,7 @@ public class DinnerMenuService {
         }
         menu.setVersion(menu.getVersion() + 1);
         menuMapper.updateById(menu);
-        return response(menu, userId);
+        return response(context, userId);
     }
 
     @Transactional
@@ -181,7 +167,7 @@ public class DinnerMenuService {
                         .eq(DinnerMenuActionEntity::getIdempotencyKey, idempotencyKey)
                         .last("LIMIT 1"));
         if (previousAction != null) {
-            return response(menu, userId);
+            return response(context, userId);
         }
         requireVersion(menu, expectedVersion);
         requireMutable(menu);
@@ -189,7 +175,7 @@ public class DinnerMenuService {
             throw new BusinessException(ErrorCode.DINNER_MENU_EMPTY);
         }
         if ("CONFIRMED".equals(menu.getStatus())) {
-            return response(menu, userId);
+            return response(context, userId);
         }
         menu.setStatus("CONFIRMED");
         menu.setConfirmedBy(userId);
@@ -203,7 +189,7 @@ public class DinnerMenuService {
         action.setActionType("CONFIRM");
         action.setIdempotencyKey(idempotencyKey);
         actionMapper.insert(action);
-        return response(menu, userId);
+        return response(context, userId);
     }
 
     private DinnerMenuEntity findMenu(Long householdId, LocalDate menuDate) {
@@ -227,7 +213,22 @@ public class DinnerMenuService {
         }
     }
 
-    private TodayMenuResponse response(DinnerMenuEntity menu, Long currentUserId) {
+    private TodayMenuResponse response(MenuContext context, Long currentUserId) {
+        return response(context.menu(), currentUserId, context.access());
+    }
+
+    private TodayMenuResponse response(
+            DinnerMenuEntity menu,
+            Long currentUserId,
+            ActiveHouseholdAccess access
+    ) {
+        if (isPreMembershipCompletedMenu(menu, access.historyVisibleFrom())) {
+            return TodayMenuResponse.preMembership(menu.getMenuDate());
+        }
+        return fullResponse(menu, currentUserId);
+    }
+
+    private TodayMenuResponse fullResponse(DinnerMenuEntity menu, Long currentUserId) {
         List<DinnerMenuSelectionEntity> selections = selections(menu.getId());
         Map<Long, Set<Long>> selectorsByRecipe = new LinkedHashMap<>();
         Map<Long, SelectionIdentity> identitiesByRecipe = new LinkedHashMap<>();
@@ -340,13 +341,7 @@ public class DinnerMenuService {
                 menu.getId(), menu.getMenuDate(), menu.getStatus(), menu.getVersion(),
                 selectedRecipeIds.size(), partnerSelectionCount, consensusCount,
                 selectedRecipeIds, dishes, menu.getConfirmedBy(), instant(menu.getConfirmedAt()),
-                menu.getCompletedBy(), instant(menu.getCompletedAt()), null);
-    }
-
-    private DinnerHouseholdMemberEntity findMembership(Long userId) {
-        return memberMapper.selectOne(Wrappers.<DinnerHouseholdMemberEntity>lambdaQuery()
-                .eq(DinnerHouseholdMemberEntity::getUserId, userId)
-                .last("LIMIT 1"));
+                menu.getCompletedBy(), instant(menu.getCompletedAt()), null, true);
     }
 
     private Instant instant(LocalDateTime value) {
@@ -354,21 +349,23 @@ public class DinnerMenuService {
     }
 
     private MenuContext lockToday(Long userId) {
-        DinnerHouseholdMemberEntity membership = findMembership(userId);
-        if (membership == null) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
-        DinnerHouseholdEntity household = householdMapper.selectById(membership.getHouseholdId());
-        if (household == null
-                || household.getStatus() != null && !"ACTIVE".equals(household.getStatus())) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
-        LocalDate menuDate = businessDateResolver.resolve(household.getTimezone(), clock.instant());
-        DinnerMenuEntity menu = menuMapper.selectByHouseholdAndDateForUpdate(household.getId(), menuDate);
+        ActiveHouseholdAccess access = householdAccessService.requireActiveHousehold(userId);
+        LocalDate menuDate = businessDateResolver.resolve(access.timezone(), clock.instant());
+        DinnerMenuEntity menu = menuMapper.selectByHouseholdAndDateForUpdate(
+                access.householdId(), menuDate);
         if (menu == null) {
             throw new BusinessException(ErrorCode.BUSINESS_ERROR, "Today's dinner menu was not initialized");
         }
-        return new MenuContext(household, menu);
+        return new MenuContext(access, menu);
+    }
+
+    private boolean isPreMembershipCompletedMenu(
+            DinnerMenuEntity menu,
+            LocalDateTime historyVisibleFrom
+    ) {
+        return "COMPLETED".equals(menu.getStatus())
+                && (menu.getCompletedAt() == null
+                        || menu.getCompletedAt().isBefore(historyVisibleFrom));
     }
 
     private void requireVersion(DinnerMenuEntity menu, long expectedVersion) {
@@ -479,7 +476,7 @@ public class DinnerMenuService {
         return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
     }
 
-    private record MenuContext(DinnerHouseholdEntity household, DinnerMenuEntity menu) {
+    private record MenuContext(ActiveHouseholdAccess access, DinnerMenuEntity menu) {
     }
 
     private record ValidatedRecipe(
